@@ -1,0 +1,799 @@
+"""
+
+cloud_schema.py — Phase 12 Relational Database Schema definition for TensionBudget multi-user cloud ingestion and ML pipelines.
+
+ 
+
+Implements the verified 3-Tier Privacy & Longitudinal Telemetry Hierarchy:
+
+  Tier 1: user_profiles (Demographics and physical customization vault)
+
+  Tier 2: sessions (Working sitting, calibration baselines, and processing_version flags)
+
+  Tier 3: epoch_features (Flattened, wide-format 5-minute longitudinal telemetry with embedded subjective strain/RPE ratings)
+
+ 
+
+Designed for compatibility with both local SQLite archives and cloud PostgreSQL deployments.
+
+"""
+
+ 
+
+import sqlite3
+
+from typing import Any, Dict, List, Optional
+
+ 
+
+ 
+
+SQLITE_DDL = [
+
+    """
+
+    CREATE TABLE IF NOT EXISTS user_profiles (
+
+        user_name TEXT PRIMARY KEY,
+
+        birth_date TEXT,
+
+        gender_sex TEXT,
+
+        weight_kg REAL,
+
+        height_cm REAL,
+
+        updated_at REAL,
+
+        password_hash TEXT,
+
+        created_via TEXT DEFAULT 'desktop_registration'
+
+    );
+
+    """,
+
+    """
+
+    CREATE TABLE IF NOT EXISTS sessions (
+
+        session_id TEXT PRIMARY KEY,
+
+        user_name TEXT NOT NULL,
+
+        start_time REAL,
+
+        start_time_str TEXT,
+
+        end_time REAL,
+
+        end_time_str TEXT,
+
+        mode TEXT,
+
+        calibration_rms_left REAL,
+
+        calibration_rms_right REAL,
+
+        processing_version TEXT NOT NULL,
+
+        FOREIGN KEY(user_name) REFERENCES user_profiles(user_name)
+
+    );
+
+    """,
+
+    """
+
+    CREATE TABLE IF NOT EXISTS epoch_features (
+
+        feature_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+        session_id TEXT NOT NULL,
+
+        epoch_index INTEGER NOT NULL,
+
+        elapsed_minutes REAL,
+
+        composite_score REAL,
+
+        eindex_live_left REAL,
+
+        eindex_live_right REAL,
+
+        eindex_cumulative_left REAL,
+
+        eindex_cumulative_right REAL,
+
+        short_suma_penalty_left REAL,
+
+        short_suma_penalty_right REAL,
+
+        total_suma_bursts_left REAL,
+
+        total_suma_bursts_right REAL,
+
+        gap_frequency_left REAL,
+
+        gap_frequency_right REAL,
+
+        apdf_10_left REAL,
+
+        apdf_10_right REAL,
+
+        apdf_50_left REAL,
+
+        apdf_50_right REAL,
+
+        apdf_90_left REAL,
+
+        apdf_90_right REAL,
+
+        asymmetry_index_ai REAL,
+
+        asymmetry_penalty_applied INTEGER,
+
+        mdf_hz_left REAL,
+
+        mdf_hz_right REAL,
+
+        mnf_hz_left REAL,
+
+        mnf_hz_right REAL,
+
+        fatigue_slope_left REAL,
+
+        fatigue_slope_right REAL,
+
+        mdf_r_squared_left REAL,
+
+        mdf_r_squared_right REAL,
+
+        n_windows_left REAL,
+
+        n_windows_right REAL,
+
+        mdf_computed_left INTEGER,
+
+        is_fatiguing_left INTEGER,
+
+        mdf_computed_right INTEGER,
+
+        is_fatiguing_right INTEGER,
+
+        strain_reported INTEGER NOT NULL DEFAULT 0,
+
+        subjective_strain_cr10 REAL DEFAULT NULL,
+
+        FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+
+        UNIQUE(session_id, epoch_index)
+
+    );
+
+    """,
+
+    """
+
+    CREATE VIEW IF NOT EXISTS v_ml_training_pairs AS
+
+    SELECT
+
+        s.session_id,
+
+        s.user_name,
+
+        u.birth_date,
+
+        u.gender_sex,
+
+        u.weight_kg,
+
+        u.height_cm,
+
+        s.calibration_rms_left,
+
+        s.calibration_rms_right,
+
+        s.processing_version,
+
+        e.*
+
+    FROM epoch_features e
+
+    JOIN sessions s ON e.session_id = s.session_id
+
+    LEFT JOIN user_profiles u ON s.user_name = u.user_name;
+
+    """
+
+]
+
+ 
+
+ 
+
+def create_schema_sqlite(db_connection: sqlite3.Connection):
+
+    """
+
+    Initializes the TensionBudget relational database tables and views on a SQLite connection.
+
+    Also executes non-breaking schema migrations for existing database files.
+
+    """
+
+    cursor = db_connection.cursor()
+
+    for ddl_stmt in SQLITE_DDL:
+
+        cursor.execute(ddl_stmt)
+
+    # Ensure existing SQLite tables receive the password-gating integrity columns
+
+    try:
+
+        cursor.execute("ALTER TABLE user_profiles ADD COLUMN password_hash TEXT;")
+
+    except sqlite3.OperationalError:
+
+        pass
+
+    try:
+
+        cursor.execute("ALTER TABLE user_profiles ADD COLUMN created_via TEXT DEFAULT 'desktop_registration';")
+
+    except sqlite3.OperationalError:
+
+        pass
+
+    db_connection.commit()
+
+ 
+
+ 
+
+def get_postgres_ddl() -> List[str]:
+
+    """
+
+    Returns equivalent PostgreSQL DDL statements for cloud database setup.
+
+    """
+
+    pg_ddl = []
+
+    for stmt in SQLITE_DDL:
+
+        s = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+
+        s = s.replace("CREATE VIEW IF NOT EXISTS", "CREATE OR REPLACE VIEW")
+
+        pg_ddl.append(s.strip() + "\n")
+
+    return pg_ddl
+
+   vHere is the complete, in-depth memory of our conversation regarding the TensionBudget system, structured logically so you can use it as a master reference guide for your project and academic presentation.
+
+ 
+
+Phase 1: Architectural Diagramming (The C4 Approach)
+
+We started by taking your highly detailed Markdown documentation and translating it into Eraser.io architecture diagrams.
+
+ 
+
+The Iteration Process: We initially tried standard flowcharts and Mermaid syntax, which resulted in messy, unreadable boxes. We ultimately succeeded by utilizing Eraser's native "Group" syntax to replicate your previous C4 Architecture Model.
+
+The Three Final Diagrams:
+
+ 
+
+System Context (Level 1): Mapped the macro-level interaction between the human wearer, the Arduino UNO R4 hardware (locked at 500 Hz), the local Python app, and the Supabase cloud infrastructure.
+
+Container Architecture (Level 2): Zoomed into the software modules, showing the LSL Ingestion Engine, the DSP Math Pipeline, the Web GUI, and the background synchronization of the v_ml_training_pairs to the Bayesian ML engine.
+
+DSP Math Pipeline (Level 3): The "engine room" diagram detailing the exact signal flow: the channel splitter, calibration mode, the 100ms RMS envelopes, and the final Composite Scoring Engine (using the Koch equations, Asymmetry Index, and Short-SUMA penalties).
+
+Phase 2: Demystifying the DSP Math
+
+We broke down specific digital signal processing terms into plain English for your presentation:
+
+ 
+
+The Spectral Tap: The crucial step of diverting the raw signal before Full-Wave Rectification. If you don't do this, rectification creates fake "2f/3f harmonics" that ruin your frequency data.
+
+Welch PSD (Power Spectral Density): The mathematical tool that chops the signal into 1.0-second overlapping windows to build a "map" of where the muscle's electrical energy is across the 20–240 Hz band.
+
+MDF (Median Power Frequency): The "center of gravity" of the Welch PSD map. As a muscle fatigues, it cannot fire as quickly, so the high-frequency energy drops, causing the MDF to slide downward. We track this negative slope to detect fatigue before the user feels pain.
+
+Phase 3: The Machine Learning Engine (Bayesian vs. Standard ML)
+
+You wisely suggested using a Bayesian Hierarchical Regression model built in PyMC, and we spent a significant amount of time detailing exactly why this is superior to standard machine learning (like Random Forests or Neural Networks) for biometric data.
+
+ 
+
+The Problem with Standard ML: Standard models assume all data points are independent. If you use them, they blend everyone's physical traits together, predicting fatigue for a "Frankenstein" average human.
+
+The Hierarchical Solution: By grouping data by user, the model utilizes:
+
+ 
+
+Random Intercepts: Calculates a unique starting baseline for each user, accounting for individual subjective pain tolerances.
+
+Random Slopes: Calculates unique weights for physiological sensitivities, recognizing that muscles fatigue at different rates for different people.
+
+Phase 4: Feature Selection (Horseshoe vs. PCA)
+
+Your DSP pipeline generates a dense 38-column feature vector, causing high multicollinearity (e.g., mdf_hz and mnf_hz measure similar things).
+
+ 
+
+Why not PCA? Principal Component Analysis blends features into artificial components (e.g., "Principal Component 1"). This destroys interpretability; you cannot tell a user why they are fatigued.
+
+The Regularized Horseshoe Prior: We chose this because it acts as a strict mathematical penalty. It forces the weights of redundant features to exactly zero, while leaving highly predictive features completely intact. This gives you automatic feature selection while keeping the variables 100% human-readable.
+
+Phase 5: The Sampling Algorithm (NUTS vs. Gradient Descent)
+
+We clarified how the computer actually finds the correct mathematical weights for the model.
+
+ 
+
+Gradient Descent (The Optimizer): It acts like a rock sliding to the bottom of a bowl, finding a single point-estimate.
+
+Metropolis-Hastings (Random Walk): Older Bayesian algorithms that take blind, inefficient guesses to map the data.
+
+NUTS (No-U-Turn Sampler): The algorithm PyMC uses under the hood. We used the "skateboarder in a skatepark" analogy. It uses Hamiltonian dynamics (the gradient and simulated momentum) to rapidly explore the parameter space. It dynamically stops itself the moment it makes a "U-Turn" to avoid wasting computing power.
+
+Phase 6: The Output (Probability Distributions for Alerting)
+
+Finally, we discussed why this entire Bayesian approach is necessary for an ergonomic alert system.
+
+Instead of predicting a single, potentially overconfident number (e.g., a strain score of 6.5), NUTS outputs a Posterior Probability Distribution (a range of certainty). This allows your software to:
+
+ 
+
+Use Threshold Probabilities: Program alerts to fire only when the model is, for example, 85% certain the user has crossed the danger limit.
+
+Prevent Alert Fatigue: Keep the system quiet when the distribution is too wide (uncertain), preventing annoying false alarms.
+
+Protect the User: Trigger conservative alerts based on the upper bound of the probability range, ensuring safety even when the average score looks okay   # TensionBudget — Complete ML & System Context
+
+Master reference document covering every detail discussed: the ML model, the full pipeline, hardware/software architecture, retraining mechanics, cost, latency, and design justifications.
+
+---
+
+## 1. Product goal
+
+A wearable bilateral EMG system that forecasts a user's subjective strain/discomfort **before it occurs**, giving enough lead time to rest or adjust — rather than only detecting strain after the fact.
+
+---
+
+## 2. Hardware & software architecture (where each step physically runs)
+
+| Stage | Runs on | Notes |
+
+|---|---|---|
+
+| Raw EMG acquisition | Arduino UNO R4 (current prototype) | Locked at 500Hz, bilateral trapezius. Only samples, digitizes, and streams — does **no math**. Limited RAM/no floating-point acceleration makes it unsuitable for DSP work. |
+
+| Streaming | Arduino → PC (current) / wearable → phone via Bluetooth (final product target) | Raw signal only, not features. |
+
+| DSP math pipeline | PC (current prototype) → **smartphone app (final product target, chosen)** | Rectification, RMS envelopes, Welch PSD, MDF/MNF, fatigue slope regression, asymmetry index, SUMA bursts, APDF, gap frequency. Also computes `composite_score` (cheap, real-time heuristic). |
+
+| Local storage | SQLite (device/phone-local), same schema as cloud | Supports offline operation (e.g. "Offline CSV Replay Mode" in the app). |
+
+| Cloud sync | Phone → cloud Postgres | Only **computed feature rows** (~35 numbers/epoch) are uploaded — not raw 500Hz signal. Per-epoch or batched sync, depending on connectivity. |
+
+| Model training (Macro + Micro) | Cloud compute only, always | Never on-device — too heavy (Macro) or requires centrally-stored shared state (Micro). |
+
+| Inference | Cloud (default) or optionally on-device using cached weights | The only latency-sensitive, user-facing step. |
+
+**Why not do DSP math on the Arduino:** insufficient RAM/compute for real-time Welch PSD and regression fits at required window sizes; Arduino's actual strength is precise, stable sample-rate timing, which the downstream frequency-domain math depends on.
+
+**Why move DSP to a phone app in the final product (not stay PC-tethered):** consistent with how consumer wearables typically work (sensor + phone companion app), removes the laptop dependency for real-world use.
+
+---
+
+## 3. Data sources — what feeds the model
+
+| Source | Table | Provides |
+
+|---|---|---|
+
+| `user_profiles` | Cloud Postgres | Demographics: birth_date, gender_sex, weight_kg, height_cm |
+
+| `sessions` | Cloud Postgres | Session metadata, calibration_rms_left/right, processing_version |
+
+| `epoch_features` | Cloud Postgres | ~35 DSP features per 5-min epoch, `strain_reported`, `subjective_strain_cr10` |
+
+| `v_ml_training_pairs` | View | Pre-joins all three tiers — demographics are already flattened in at the DB level, so no separate join step is needed downstream (feature *selection*, not feature *joining*, happens later) |
+
+| App UI (Perceived Strain dropdown) | User action | The only ground-truth label source — Borg CR-10 scale, app-specific verbal anchors (6 = "Very noticeable fatigue," **7 = "Very strong / Severe strain,"** 10 = "Absolute maximum") |
+
+**Labeling is opt-in and manual**, defaulting to `[NULL] Unreported / Skip` (`strain_reported = 0`). This makes labeled data inherently **sparse, not redundant** — every logged rating is still a unique, valuable data point; the risk is sparsity/potential bias (e.g. if logging clusters only around extreme moments) rather than wasted data.
+
+---
+
+## 4. What the model predicts
+
+**Target:** `subjective_strain_cr10`, forecasted **h minutes ahead** (not same-epoch/nowcasting), output as a full posterior distribution, not a point estimate. This is a forecasting task by design, since the product goal is early warning.
+
+---
+
+## 5. ML pipeline — full step-by-step
+
+### Phase 0 — Data preparation before the model
+
+0.1 Data pulled from `v_ml_training_pairs` (pre-joined).
+
+0.2 Filter: only rows where the **target** epoch has `strain_reported = 1`.
+
+0.3 **Lagged pair construction** — self-join `epoch_features` on `session_id`, offsetting `epoch_index` by lead time `h`: predictors at time *t*, label at time *t+h*.
+
+0.4 **Trend feature construction** — trailing-window slopes (e.g. over epochs t-2, t-1, t) appended as extra predictors, since forecasting needs trajectory, not just current state.
+
+0.5 **Feature selection** (not "demographic join" — already handled by the view) — decide which pre-joined demographic columns to retain as covariates.
+
+### Phase 1 — Pre-training prep
+
+1.1 **Grouped split** — train/val/test split at the **session or user level** (never row-level, to avoid leakage from within-session autocorrelation). Primarily relevant to the Macro path.
+
+1.2 **Standardization** — features scaled to zero mean/unit variance.
+
+1.3 **Missing value handling** — incomplete DSP rows dropped/flagged.
+
+1.4 **Hierarchical indexing** — each row tagged with integer user index `u`.
+
+### Phase 2 — Model definition
+
+```
+
+strain[u, t+h] ~ Normal(μ, σ)
+
+μ = α[u] + Σ_k β[u,k] × feature_k[t] + β_trend[u] × trend(feature[t-2:t])
+
+α[u]      ~ Normal(α_pop, τ_α)          # per-user baseline (random intercept)
+
+β[u,k]    ~ Normal(β_pop[k], τ_β[k])    # per-user sensitivity (random slope)
+
+β_pop[k]  ~ Normal(0, λ_k² × τ²)        # population weight (Horseshoe-shaped)
+
+λ_k       ~ HalfCauchy(0, 1)            # local shrinkage, per feature
+
+τ         ~ HalfCauchy(0, τ_0)          # global shrinkage strength
+
+τ_α, τ_β[k] ~ HalfNormal(...)
+
+σ         ~ HalfNormal(...)
+
+```
+
+### Phase 3 — Hyperparameters (chosen/tuned, not learned)
+
+| Hyperparameter | How tuned |
+
+|---|---|
+
+| Lead time `h` | Test candidate values (5/10/15 min) against forecast usefulness |
+
+| Trailing window size | Test 2–4 epochs |
+
+| Horseshoe `τ_0` | Set from expected number of "real" predictive features |
+
+| `STRAIN_THRESHOLD`, `CONFIDENCE_REQUIRED`, `HARD_SAFETY_CEILING` | Tuned against labeled outcomes — a policy layer, separate from model fitting |
+
+| NUTS: chains, draws, tuning steps, target acceptance | PyMC defaults; adjusted only if diagnostics (below) fail |
+
+### Phase 4 — NUTS sampling (Macro path only)
+
+4.1 Initialize multiple chains (e.g. 4).
+
+4.2 Warm-up — adaptively tunes step size and mass matrix.
+
+4.3 Sampling — Hamiltonian trajectory expansion; stops itself at a "U-turn" or divergence (no manual tuning of step count needed) — this is what "No-U-Turn" means.
+
+4.4 Output: thousands of samples per parameter — this collection **is** the posterior.
+
+4.5 Diagnostics — R-hat ≈ 1.0, effective sample size, divergence count. If diagnostics fail → adjust hyperparameters/priors → resample (loop back to Phase 3/4).
+
+### Phase 5 — Validation (Macro path only)
+
+5.1 Posterior predictive check on held-out sessions/users.
+
+5.2 Metrics: point accuracy (e.g. MAE), **calibration check** (does the 90% credible interval actually contain the true value ~90% of the time?), comparison against the `composite_score` heuristic baseline.
+
+### Phase 6 — Storage
+
+Posterior summaries (mean, SD, credible intervals) written to a cloud `model_weights` table — per-user records + one shared population record.
+
+### Phase 7 — Inference (no NUTS, reads stored weights only)
+
+New epoch → lookup stored posterior for that user → compute posterior predictive distribution for `t+h` → pass to the alert policy layer.
+
+### Phase 8 — Retraining triggers (branch **before** any sampling, not after validation)
+
+```
+
+Indexing > Macro Trigger: [24–72h OR 500+ new labels]
+
+Indexing > Micro Update:  [per new user label]
+
+// Macro path — full pipeline
+
+Macro Trigger > Model Graph > Hyperparameters > NUTS Sampler > Diagnostics
+
+Diagnostics > Validation: [YES]
+
+Diagnostics > Hyperparameters: [NO] Adjust settings, resample
+
+Validation > Model Weights: Overwrites ALL parameters
+
+// Micro path — lightweight, bypasses NUTS entirely
+
+Model Weights > Micro Update: Reads fixed β_pop[k], τ_β[k] (anchor)
+
+Micro Update > Model Weights: Writes updated α[u], β[u,k] ONLY
+
+```
+
+### The data flywheel (closes the loop)
+
+```
+
+Alert Policy > User Label: system alerts user
+
+User Label > Raw Storage: [strain_reported = 1] feeds back to cloud
+
+```
+
+A forecast triggers an alert → user responds with a real label → becomes tomorrow's training data.
+
+---
+
+## 6. Macro vs. Micro — full comparison
+
+| | Macro (full retrain) | Micro (lightweight update) |
+
+|---|---|---|
+
+| Scope | Every user + population, jointly | One user only |
+
+| What's held fixed | Nothing — fully resampled | `β_pop[k]`, `τ_β[k]` frozen at last Macro's values |
+
+| What's updated | `α[u]`, `β[u,k]` for all users + `α_pop`, `β_pop[k]`, `τ_α`, `τ_β[k]`, `λ_k`, `τ` | Just that one user's `α[u]`, `β[u,k]` |
+
+| Method | Full NUTS, thousands of draws, multiple chains, diagnostics, validation | Small, fast single-user Bayesian update — no NUTS, no diagnostics |
+
+| Trigger | Every 24–72h, or once ≥500 new labeled epochs accumulate | Per new labeled epoch (runs immediately) |
+
+| Why this cadence | Expensive — must be batched; freshness vs. cloud-compute-cost trade-off | Cheap — no cost reason to delay; personalization should feel responsive, not lag days behind |
+
+| Runs where | Cloud compute instance (e.g. AWS EC2), spun up for the job, torn down after | Cloud (always) — needs shared `model_weights` read/write access; not run on-device |
+
+**Personalization never fully replaces the population anchor.** As a user logs more data, `β[u,k]` is pulled increasingly toward their own evidence and increasingly less toward `β_pop[k]` — but the anchor is never removed from the model definition, even for long-time users. This is intentional: it protects against a handful of noisy/unusual personal data points swinging predictions wildly. This is the core benefit of **partial pooling** (vs. "no pooling," i.e. a fully separate model per user, which was explicitly rejected).
+
+**Network effect:** later users benefit from a more-refined population baseline built from everyone who came before them and had enough Macro-retrain-cycle data — but this only holds if periodic retraining actually happens, and only helps proportionally to how similar a new user is to the existing population.
+
+---
+
+## 7. Alert decision logic (policy layer, not learned by the model)
+
+```
+
+Every epoch:
+
+  posterior = predictive_posterior(model, user=u, features_now, lead=h)
+
+  P_over = fraction(posterior > STRAIN_THRESHOLD)
+
+  if P_over >= CONFIDENCE_REQUIRED:
+
+      fire_alert()
+
+  if percentile(posterior, 95) >= HARD_SAFETY_CEILING:
+
+      fire_conservative_alert()   # catches high-uncertainty, high-danger cases
+
+```
+
+- `STRAIN_THRESHOLD` (e.g. 7.0) — justified by the app's own CR-10 scale labeling 7 as "Very strong (Severe strain)," not an arbitrary or borrowed number.
+
+- `CONFIDENCE_REQUIRED` (e.g. 0.85) — the dial controlling false-alarm vs. missed-danger trade-off; only possible because the model outputs a range, not a point estimate.
+
+- The model predicts the distribution; the threshold and confidence level are **policy decisions**, not learned parameters.
+
+---
+
+## 8. Composite score (parallel, non-ML heuristic)
+
+- Hand-built formula (Koch equations + asymmetry + SUMA penalty), fixed weights, no real strain data behind it originally.
+
+- Computed on-device (phone) in real time, alongside the DSP features — not dependent on the ML pipeline to produce a number.
+
+- Can be **recalibrated periodically** using the ML model's learned weights (`β_pop`, or per-user `β[u,k]`) — replacing guessed coefficients with data-derived ones. This is effectively distilling the expensive Bayesian model into a cheap, fast formula usable between retrains.
+
+---
+
+## 9. Why Bayesian hierarchical + Horseshoe + NUTS (and not alternatives)
+
+| Choice | Why | Beats |
+
+|---|---|---|
+
+| Bayesian (posterior, not point estimate) | Honest uncertainty, essential with sparse/opt-in labels; enables the confidence-threshold alert rule | Point-estimate models (regression, Random Forest, plain NN) are confidently wrong when data is thin |
+
+| Hierarchical (per-user + population) | Partial pooling — personalizes while borrowing strength from the group | Complete pooling (ignores individual differences) and no pooling (unstable with little per-user data) |
+
+| Horseshoe prior | Automatic, interpretable feature selection across ~35 correlated features | PCA (destroys interpretability), Lasso/Ridge (fixed, non-adaptive shrinkage) |
+
+| NUTS | Efficiently samples the full posterior via Hamiltonian dynamics; self-tuning (no manual step-count tuning) | Gradient descent (one point, no uncertainty), Metropolis-Hastings (too slow in high dimensions) |
+
+### Why not a neural network (explicit trade-off, not just "NNs are heavy")
+
+- NNs give point predictions natively; calibrated uncertainty requires extra machinery (Bayesian NNs, MC Dropout, deep ensembles) that's harder to implement and often poorly calibrated regardless.
+
+- NNs are data-hungry; personalizing per user (embeddings or per-user layers) needs far more labeled data per person than this project's sparse, opt-in labeling realistically provides.
+
+- NNs are a black box — explaining *why* a prediction was made requires bolting on separate tools (SHAP/LIME) after the fact, vs. a hierarchical model's weights being directly readable.
+
+- With a small, sparse dataset, NNs are prone to overfitting/memorizing noise; the Horseshoe prior's regularization is explicitly designed to handle exactly this data regime.
+
+- **Honest caveat:** this calculus could shift with much more data — NN flexibility becomes more attractive as data volume grows. The choice is scoped to the current data regime and requirement (calibrated uncertainty + per-user personalization on sparse data), not a blanket claim that NNs are inferior in general.
+
+---
+
+## 10. Retraining cost (cloud compute)
+
+Based on AWS EC2 c6i.xlarge (~$0.17/hr, 2026 pricing):
+
+| Population size | Retrain time (est.) | Daily cadence | 72h cadence | Weekly |
+
+|---|---|---|---|---|
+
+| ~15–100 users | ~1 hr | ~$5/mo | ~$1.70/mo | ~$0.68/mo |
+
+| ~1,000 users | ~2–3 hrs | ~$10–15/mo | ~$3.40–5.10/mo | ~$1.36–2.04/mo |
+
+| ~10,000 users | ~4–6 hrs (bigger instance) | ~$82–122/mo | ~$27–41/mo | ~$11–16/mo |
+
+Storage (~300–400 bytes/epoch row) and data transfer (within AWS's free tier) are negligible in comparison at this project's scale. Cost only becomes a meaningful budget line at real product scale (thousands of users).
+
+---
+
+## 11. Latency (by operation — not one blanket number)
+
+| Operation | Typical latency | Why |
+
+|---|---|---|
+
+| Inference (score one epoch) | ~50–300ms | Lightweight lookup + small arithmetic; the only step a user actually waits on |
+
+| Micro update | ~1–5 sec | Small single-user Bayesian update |
+
+| Macro retrain | Minutes to hours | Fully backgrounded/scheduled — invisible to the user |
+
+| Phone → cloud sync | Sub-second on decent connectivity; queued on poor connectivity | Small payload (~35 numbers per row) |
+
+**Offline resilience option:** cache last-fetched personal weights on-device so inference can still run (slightly stale) without connectivity, or queue the alert check until connectivity returns.
+
+---
+
+## 12. Honest limitations (worth stating proactively in a defense)
+
+- Labeled-epoch density (`strain_reported = 1` rate) must be verified empirically before claiming strong performance — sparse, not redundant, but still a real constraint.
+
+- Potential label bias if logging clusters around extreme strain moments rather than being spread across the full range — worth measuring, and worth nudging (not forcing) users to log periodically.
+
+- Threshold, confidence level, lead time `h`, and Horseshoe `τ_0` need empirical calibration against real collected data; currently justified by design logic/the app's own scale, not yet measured.
+
+- Splits must be session/user-level, never row-level, to avoid leakage from within-session autocorrelation.
+
+- `composite_score` should be excluded from the ML predictor set (or treated explicitly as a baseline) to avoid circular feature engineering.
+
+- Cold start: before the very first Macro run, no population anchor (`β_pop`, `τ_β`) exists yet for Micro to read — Micro cannot run until at least one Macro pass has occurred.
+
+- `PRAGMA foreign_keys = ON` must be set per SQLite connection or declared foreign keys go unenforced.
+
+---
+
+## 13. Key literature (for citation)
+
+- **Piironen, J. & Vehtari, A. (2017).** "Sparsity information and regularization in the horseshoe and other shrinkage priors." *Electronic Journal of Statistics.*
+
+- **Hoffman, M.D. & Gelman, A. (2014).** "The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo." *JMLR*, 15(47), 1593–1623.
+
+- Hierarchical Bayesian modeling precedent for individual-difference prediction from human-subject sensor data (general justification for partial pooling).
+
+- EMG-specific hierarchical Bayesian modeling precedent (2023, *Scientific Reports*, movement-intention prediction) — evidence hierarchical structure outperforms flat baselines on EMG signals specifically.
+
+- EMG fatigue physiology literature (spectral compression, MDF/MNF decline with fatigue) — grounding for the DSP-derived predictor features.
+
+*No existing paper matches this exact application (hierarchical Bayesian forecasting of subjective strain from EMG) — each individual architectural choice is independently well-supported, which is the intended defense framing: not "someone did our exact thing," but "every component of our design is independently validated."*  Let me answer this precisely, grounded in what's actually established practice — not guesses.
+
+## 1. How much data do you need before training?
+
+There's no single magic number, but there is real methodological literature on minimum sample sizes for hierarchical/multilevel models, and it applies directly to your architecture.
+
+The most commonly cited threshold in the multilevel modeling literature: the probability that a model will not converge can be quite high when the number of groups is low (fewer than 30-50) and the number of cases per group is small (5-20). More specifically, most simple models with 50 or more groups and approximately 5-10 cases per group will not have convergence problems, while with fewer than 5 cases per group and fewer than 50 groups, standard errors for fixed effects will be too small, inflating false-positive risk, and random effect estimates become unreliable.
+
+**How this maps to your project:**
+
+- "Groups" = your users. "Cases per group" = labeled epochs per user.
+
+- The frequentist thresholds above (50 groups, 5–10 cases each) are a *conservative reference point*, not a hard requirement for you — because Bayesian estimation is explicitly noted in this literature as a way to make small-cluster situations more tractable than classical (maximum-likelihood) approaches, since priors regularize estimates that classical methods can't stabilize with few groups.
+
+- **Realistic honest minimum for your class project:** aim for **at least 8–10 users**, each with **at least 8–10 labeled epochs**, before you run a full model and call the results meaningful. Below that, you can still technically run NUTS and get a posterior — but the posteriors will be very wide, group-level variance (`τ_α`, `τ_β[k]`) will be poorly estimated, and you should present results as "preliminary, demonstrating the pipeline works" rather than "our model accurately predicts strain."
+
+- If you have fewer than ~5 users, don't try to demonstrate the *hierarchical/personalization* benefit yet — demonstrate the *pipeline mechanics* (data flows in, NUTS converges, posterior comes out, alert logic works on it) using a simpler pooled or single-user model, and be upfront that hierarchical personalization needs more subjects to actually show its value.
+
+**What to check before training, not guess:** how many users you have, and for each, how many epochs have `strain_reported = 1`. If some users have 1–2 labels, keep them in the dataset (partial pooling handles this gracefully) but don't expect their personal `β[u,k]` to mean much yet.
+
+## 2. How you should actually proceed — a professional Bayesian workflow, not ad hoc
+
+This is a well-established sequence (this exact structure is often called the "Bayesian workflow," most formally described by Gelman et al.). Follow it in this order, don't skip steps:
+
+1. **Prior predictive check** — before fitting anything to real data, simulate data *from your priors alone* and check it produces plausible strain values (0–10 range, not absurd numbers). This catches badly specified priors before they contaminate a real fit.
+
+2. **Fit the model on your real data** — run NUTS as specified in your model definition.
+
+3. **Check convergence diagnostics** — R-hat ≈ 1.0 for every parameter, reasonable effective sample size, zero or near-zero divergences. **Do not proceed to interpret results if these fail** — this is the single most common mistake in student Bayesian projects: presenting posterior means from a model that didn't actually converge.
+
+4. **Posterior predictive check** — simulate new data *from the fitted posterior* and compare it against your real held-out data. Does it look similar? This is your actual "does the model work" check, not just R-hat.
+
+5. **Only then** compute your validation metrics (held-out MAE, calibration check, comparison against `composite_score`) and produce the results you show your professor.
+
+If you skip straight to "fit and report the posterior mean," you have no way of knowing whether the numbers you're showing your professor are trustworthy or an artifact of a poorly converged sampler — this is the difference between doing this correctly and just producing output that looks right.
+
+## 3. "Give context to AI and have it do this / switch between AIs to double-check" — is this sound?
+
+Honest answer: **as a support tool, yes; as your actual verification method, no — and here's precisely why, not just a vague caution.**
+
+- An LLM can write PyMC boilerplate for you correctly most of the time — the model specification we've built together is standard enough that any capable coding assistant can translate it into working code.
+
+- **What an LLM cannot substitute for:** actually checking R-hat/divergences on *your* specific run, actually looking at *your* posterior predictive plots, actually verifying *your* data was joined/split correctly. These require you to run the code and inspect real diagnostic output — an LLM describing what good diagnostics "should" look like is not the same as you confirming your run actually has them.
+
+- **Switching between different AI models to cross-check is a weak verification strategy specifically here**, because different LLMs are all working from similar training data about "how Bayesian workflows generally go" — they're not independently re-deriving correctness from your actual numbers, they're pattern-matching to similar-looking projects. Two AIs agreeing doesn't mean your model converged; it means two systems both produced plausible-sounding text.
+
+- **The actual professional verification method:** run the diagnostics library functions yourself (ArviZ, which ships with PyMC, has `az.summary()` for R-hat/ESS and `az.plot_trace()`, `az.plot_ppc()` for visual checks) and *read the numbers/plots yourself*. This is the real check — not another LLM's opinion.
+
+**Correct way to use AI here:** use one capable AI assistant to help you write and debug the PyMC code, then verify the results using the standard tools (ArviZ diagnostics) yourself, and understand what you're looking at well enough to explain it to your professor without relying on an AI's summary of your own results.
+
+## 4. Which AI, and which tools (Colab / Jupyter / VS Code)?
+
+**Coding environment — Jupyter-style notebooks are the correct choice for this specific task**, not a plain script in VS Code, and this isn't a stylistic preference — it's because Bayesian workflow is inherently iterative and visual: you fit, plot trace diagnostics, look at posterior predictive plots, adjust, refit — notebooks let you keep intermediate objects (the fitted model, the posterior samples) in memory between cells without rerunning the entire (potentially slow) NUTS sampling every time you want to check one more diagnostic plot. This matters a lot in practice — NUTS runs can take minutes; you don't want to rerun the whole thing to see a different plot.
+
+Two good options:
+
+- **Google Colab** — zero setup, free GPU/CPU compute, good for a class project where you don't want to fight environment/dependency issues. Install PyMC via `!pip install pymc` in the first cell. Downside: sessions can time out or disconnect during long NUTS runs, which is a real risk if your model takes a while to sample.
+
+- **Local Jupyter (via Anaconda/Miniconda) or JupyterLab** — more reliable for longer runs, no timeout risk, but requires you to manage the PyMC install (PyMC has some non-trivial dependencies, particularly around compiled backends) — this can eat time troubleshooting environment issues that Colab avoids.
+
+**VS Code** can run Jupyter notebooks too (via its Jupyter extension) if you prefer its editor — this isn't actually a separate choice from "notebooks," it's just a different interface to the same notebook format. If you're comfortable with VS Code already, using it with the Jupyter extension gets you the best of both (notebook-style iterative workflow + a full code editor for any supporting scripts).
+
+**My concrete recommendation for your situation:** start in **Google Colab** for initial development and debugging (fast iteration, no setup friction), and if your Macro-level NUTS run turns out to take long enough to risk Colab disconnecting, move the final full training run to local Jupyter/VS Code with a stable, uninterrupted session.
+
+**Which AI to use for code help:** any current-generation coding-capable assistant (Claude, ChatGPT, etc.) can write correct PyMC boilerplate for a model this well-specified — the actual differentiator won't be which AI you pick, it'll be whether you verify its output against real diagnostic checks yourself, per point 3 above. Don't spend time shopping between AI models for this; spend that time learning to read `az.summary()` output correctly.
+
+## 5. How to make sure this is actually done right — a concrete checklist
+
+Before showing your professor anything, confirm all of these, not just some:
+
+- [ ] Data audit done: number of users, labeled epochs per user, reported explicitly (not assumed)
+
+- [ ] Prior predictive check run and sane
+
+- [ ] Model fit with ArviZ diagnostics checked: R-hat ≈ 1.0 for all parameters, zero/near-zero divergences, adequate effective sample size
+
+- [ ] If diagnostics failed, you adjusted priors/reparameterized and refit — not just reported the failed run's numbers anyway
+
+- [ ] Posterior predictive check plotted and visually reasonable
+
+- [ ] Held-out validation done at session/user level, not row-level
+
+- [ ] Results reported *with* uncertainty (credible intervals), not just point estimates
+
+- [ ] Honest statement included about data volume limitations, given point 1 above
+
+This is the actual, professional standard for "trained and validated a Bayesian hierarchical model" — not an AI-generated summary of results, but you having personally confirmed each of these against your real output.

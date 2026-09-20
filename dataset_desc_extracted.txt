@@ -1,0 +1,1145 @@
+TensionBudget
+
+Dataset Description & Feature Dictionary
+
+ 
+
+Bilateral Upper-Trapezius Ergonomic Surveillance Study
+
+Document version: Phase 13 / W7  (2026-08-05)
+
+Prepared for academic presentation, ethics review, and machine-learning pipeline documentation.
+
+Table of Contents
+
+1. Study Overview & Data Collection Protocol
+
+Item
+
+Detail
+
+Study name
+
+TensionBudget — Real-Time Bilateral Trapezius Ergonomic Surveillance
+
+Study type
+
+Repeated-measures, longitudinal, observational pilot
+
+Population
+
+Healthy adults performing computer / desk-based work
+
+Measurement modality
+
+Surface electromyography (sEMG), bilateral upper trapezius
+
+Self-report modality
+
+Borg CR-10 perceived muscular strain ratings
+
+What is being measured, and why
+
+The upper trapezius muscle is the primary site of work-related neck and shoulder pain — the most prevalent musculoskeletal disorder in office workers globally (prevalence 15–35%, Hoy et al. 2010). Unlike wrist or back injuries that are often acute, trapezius disorders develop through cumulative low-level activation that never fully relaxes, overloading a specific population of slow-twitch (Type I) motor units — the “Cinderella hypothesis” (Hägg 1991). Standard clinical observation cannot detect this mechanism; continuous sEMG quantification is required.
+
+What the dataset enables
+
+The 38-column feature vector logged every 5 minutes, paired with concurrent Borg CR-10 subjective strain ratings, creates a supervised longitudinal time-series dataset for:
+
+Bayesian hierarchical regression of subjective muscular strain from physiological biomarkers
+
+Fatigue onset prediction (from spectral MDF decline)
+
+Subject-specific ergonomic threshold personalisation
+
+Real-time intervention timing (when to alert, when to recommend breaks)
+
+2. Database Architecture
+
+The dataset is organised as a 3-tier privacy-segregated relational hierarchy, implemented as SQLite locally (per device) and PostgreSQL on the cloud (Supabase).
+
+user_profiles  —  1 row per subject
+
+PK: user_name
+
+Demographics, body measurements
+
+▼   1 : many
+
+sessions  —  1 row per work recording
+
+PK: session_id
+
+Timestamps, calibration baselines
+
+▼   1 : many
+
+epoch_features  —  1 row per 5 minutes
+
+PK: feature_id   |   UNIQUE: (session_id, epoch_index)
+
+38-column physiological feature vector + ground-truth Borg CR-10 label y
+
+ML view: v_ml_training_pairs performs a 3-table JOIN to produce a flat training matrix combining subject demographics, session calibration baselines, and per-epoch feature vectors in a single query.
+
+3. Table 1 — user_profiles (Subject Demographic Vault)
+
+Granularity: one row per research subject, updated at profile creation or subject data change.
+
+Privacy principle
+
+This table stores identifying demographic information. Research tables (sessions, epoch_features) reference only the anonymised user_name bridge key — they contain no names, emails, or directly re-identifiable data.
+
+Column
+
+SQL Type
+
+Constraints
+
+Description
+
+user_name
+
+TEXT
+
+PRIMARY KEY
+
+Anonymised subject identifier (bridge key). All downstream research tables join to this field only. May be a pseudonym, initials, or assigned ID code.
+
+birth_date
+
+TEXT
+
+nullable
+
+Date of birth (YYYY-MM-DD). Stored as text to avoid timezone ambiguity. Used to compute age at time of session dynamically — never stored as a pre-computed age, to remain accurate over longitudinal multi-year studies.
+
+gender_sex
+
+TEXT
+
+nullable
+
+Self-reported biological sex / gender (“M”, “F”, “Other”, “Unspecified”). Used as a covariate in Bayesian hierarchical models — Koch et al. (2025) found sex to be a significant moderator of short-SUMA frequency effects on pain.
+
+weight_kg
+
+REAL
+
+nullable
+
+Body mass in kilograms. Used to compute BMI dynamically (see formula below). May be a relevant confounder for shoulder load in standing vs. seated postures.
+
+height_cm
+
+REAL
+
+nullable
+
+Standing height in centimetres. Combined with weight_kg for BMI calculation.
+
+updated_at
+
+REAL
+
+nullable
+
+Unix timestamp (seconds since epoch) of the last profile update. Enables tracking if subject measurements change during a longitudinal study.
+
+password_hash
+
+TEXT
+
+nullable
+
+PBKDF2-HMAC-SHA256 derived hash with random per-subject salt. Prevents unauthorised subjects from submitting data under another subject's identifier during multi-user cloud sessions. Never stored in plaintext.
+
+created_via
+
+TEXT
+
+DEFAULT 'desktop_registration'
+
+Registration pathway: 'desktop_registration' (GUI app) or 'web_registration' (browser app). Useful for identifying systematic differences between web and desktop cohorts.
+
+BMI  =  weight_kg  ÷  (height_cm  ÷  100)2
+
+Body Mass Index — computed at query time from weight_kg and height_cm, never stored
+
+Derived fields (computed at query time, not stored)
+
+Derived field
+
+Formula
+
+Purpose
+
+Age at session
+
+session.start_date − user_profiles.birth_date
+
+Covariate in age-stratified ergonomic models
+
+BMI
+
+weight_kg ÷ (height_cm ÷ 100)²
+
+Body composition covariate
+
+4. Table 2 — sessions (Work Session Manifest)
+
+Granularity: one row per contiguous recording session (one press of Start → Stop). Provides the temporal anchor and signal processing provenance for all epoch-level data — every epoch inherits its calibration context from the parent session row.
+
+Column
+
+SQL Type
+
+Constraints
+
+Description
+
+session_id
+
+TEXT
+
+PRIMARY KEY
+
+Universally unique ID for the recording session. Format: <user_name>_<YYYYMMDD>_<HHMMSS> (e.g. Mohit_K_20260804_130742). Foreign key joining session manifests to all epoch rows.
+
+user_name
+
+TEXT
+
+FK → user_profiles, NOT NULL
+
+Links the session to the subject who performed it.
+
+start_time
+
+REAL
+
+nullable
+
+Session start time as Unix timestamp (float seconds). Preserves sub-second precision; timezone-independent.
+
+start_time_str
+
+TEXT
+
+nullable
+
+Human-readable ISO 8601 start time. Convenience field for CSV export / human review; not used quantitatively.
+
+end_time
+
+REAL
+
+nullable
+
+Session end time as Unix timestamp. Computed on end_session(); NULL for sessions terminated abnormally (e.g. crash).
+
+end_time_str
+
+TEXT
+
+nullable
+
+Human-readable end time string. Same purpose as start_time_str.
+
+mode
+
+TEXT
+
+nullable
+
+Acquisition mode: “live_lsl” (real-time Lab Streaming Layer), “replay” (offline CSV replay), or “web” (browser WebAssembly path). Used to stratify analyses by acquisition path.
+
+calibration_rms_left
+
+REAL
+
+nullable
+
+RMS amplitude (ADC units) of the left trapezius during the 5-second maximal shrug calibration. Denominator for left-channel %RVE normalisation. NULL = uncalibrated session.
+
+calibration_rms_right
+
+REAL
+
+nullable
+
+Same as above for the right trapezius. Each channel has its own independent calibration baseline.
+
+processing_version
+
+TEXT
+
+NOT NULL
+
+Signal processing pipeline version tag: “phase11_edge_padding” (current) or “legacy_constant_padding” (historical). Must be included as a covariate when training on mixed-version data.
+
+5. Table 3 — epoch_features (Primary Research Dataset)
+
+Granularity: one row per completed 5-minute work epoch, per session. This is the primary unit of analysis for all machine-learning experiments.
+
+Each row represents a 5-minute window of bilateral trapezius sEMG (150,000 samples × 2 channels = 300,000 raw measurements), compressed into 36 physiological features + 2 subjective label fields = 38 columns.
+
+Unique constraint
+
+(session_id, epoch_index) — idempotent: re-uploading the same epoch overwrites rather than duplicates.
+
+5.1 Row Identifiers & Time Coordinates
+
+Column
+
+Type
+
+Units
+
+Range
+
+Description
+
+feature_id
+
+INTEGER
+
+—
+
+1, 2, 3, …
+
+Auto-incrementing primary key. No scientific meaning; used only for internal row referencing.
+
+session_id
+
+TEXT
+
+—
+
+—
+
+Foreign key linking to sessions. Every epoch belongs to exactly one session and inherits its calibration and subject identity.
+
+epoch_index
+
+INTEGER
+
+—
+
+0, 1, 2, …
+
+Sequential 0-based window counter within the session (epoch 0 = first 5 min, epoch 1 = minutes 5–10, …). Also the join key to the raw telemetry file.
+
+elapsed_minutes
+
+REAL
+
+minutes
+
+0.0, 5.0, 10.0, …
+
+Wall-clock elapsed time from session start to the end of this epoch (epoch_index × 5.0). Time axis for within-session trend analysis.
+
+5.2 Composite Ergonomic Score
+
+Column
+
+Type
+
+Units
+
+Range
+
+Description
+
+composite_score
+
+REAL
+
+dimensionless
+
+[0.0, 3.0]
+
+The primary real-time ergonomic health indicator. Fuses bilateral amplitude exposure, short-event frequency risk, and postural asymmetry into a single scalar that drives live alerting. Computed via: (1) worst-side-drives bilateral fusion, (2) asymmetry penalty subtraction, (3) floor clamp at 0. Never NULL (defaults to 0.0). Higher = more hazardous loading.
+
+Never NULL — defaults to 0.0 when uncomputed.
+
+Score interpretation guide
+
+Range
+
+Interpretation
+
+Suggested action
+
+0.0 – 0.5
+
+Minimal load — adequate recovery
+
+None
+
+0.5 – 1.0
+
+Low ergonomic risk
+
+Monitor
+
+1.0 – 1.8
+
+Moderate load — some sustained activation
+
+Prompt micro-break
+
+1.8 – 2.5
+
+High load — inadequate recovery
+
+Alert + recommend posture correction
+
+2.5 – 3.0
+
+Severe exposure — fatigue risk elevated
+
+Urgent intervention
+
+5.3 Exposure Index — Amplitude-Domain Load (per side)
+
+These four columns implement the Koch et al. (2024) Exposure Index (EIndex) formula, tracking what fraction of each 5-minute epoch was spent in rest, low, and high muscular activation zones.
+
+EI  =  −2 × Prest  +  Plow  +  2 × Phigh
+
+P(rest), P(low), P(high) = proportion of RMS samples below 0.5%, between 0.5–7.0%, and above 7.0% MVE
+
+Column
+
+Type
+
+Range
+
+Description
+
+eindex_live_left
+
+REAL
+
+[−2.0, +2.0]
+
+Left trapezius EIndex computed on the current sliding 10-minute RMS window, refreshed every 2 s. Drives the real-time composite score. −2.0 = fully resting; +2.0 = high-load throughout. Never NULL.
+
+eindex_live_right
+
+REAL
+
+[−2.0, +2.0]
+
+Same metric for the right trapezius. The two sides are processed with zero cross-channel mixing. Never NULL.
+
+eindex_cumulative_left
+
+REAL
+
+unbounded (monotonic)
+
+Session-level cumulative EIndex for the left trapezius, incremented once per completed discrete 10-minute boundary (never on overlapping windows). Used for STAMI population-reference comparison only — never drives the real-time composite.
+
+eindex_cumulative_right
+
+REAL
+
+unbounded (monotonic)
+
+Same for the right trapezius.
+
+Why two EIndex variants?
+
+A single summed EIndex on a sliding window would double-count: a moderate 10-minute activity period would be counted hundreds of times across overlapping 2-second refresh cycles, diverging to ~5,760 over an 8-hour session. The live/cumulative split ensures each moment of activity is counted exactly once per metric.
+
+5.4 Short-SUMA Frequency Penalty (per side)
+
+Quantifies the frequency of short-duration sustained muscle activity events — validated by Koch et al. (2025) as a stronger predictor of neck/shoulder pain than total SUMA duration.
+
+Column
+
+Type
+
+Range
+
+Description
+
+short_suma_penalty_left
+
+REAL
+
+[0.0, 1.0]
+
+Left trapezius short-event frequency penalty. Counts SUMA events in the 1.5–5 s and 5–10 s duration bins within the current 10-minute window, then applies the penalty formula below. Computed per-window — never accumulated across epochs.
+
+short_suma_penalty_right
+
+REAL
+
+[0.0, 1.0]
+
+Same for the right trapezius.
+
+δ  =  min ( Nshort × 0.1 ,  1.0 )
+
+Each short event contributes 0.1 penalty points; 10 or more events saturates the penalty at 1.0
+
+0 short events → penalty = 0.0  (no fragmented activation)
+
+3 short events → penalty = 0.3
+
+10 short events → penalty = 1.0  (saturated — maximum fragmentation risk)
+
+5.5 Sustained Activity Burst Count (per side)
+
+Column
+
+Type
+
+Range
+
+Description
+
+total_suma_bursts_left
+
+REAL
+
+≥ 0 (count)
+
+Total number of SUMA events detected in the left trapezius during the epoch, across all duration bins (1.5 s to > 20 min). A SUMA event is any contiguous period where %RVE > 0.5% lasting at least 1.5 s. Higher counts = more fragmented, less continuous activation.
+
+total_suma_bursts_right
+
+REAL
+
+≥ 0 (count)
+
+Same for the right trapezius.
+
+5.6 Micro-Rest Frequency (per side)
+
+Column
+
+Type
+
+Units
+
+Description
+
+gap_frequency_left
+
+REAL
+
+gaps/min
+
+Micro-rest frequency for the left trapezius. A gap is any period where %RVE < 3.0% lasting at least 0.125 s — complete muscular relaxation. The primary physiological recovery indicator. In occupational ergonomics, values below ~4 gaps/minute are associated with elevated shoulder-pain risk (Veiersted 1994). Never NULL.
+
+gap_frequency_right
+
+REAL
+
+gaps/min
+
+Same for the right trapezius.
+
+Biological significance
+
+The Cinderella motor units (lowest-threshold, first recruited) are only de-loaded when %RVE drops below the 3% gap threshold. Without adequate micro-rests, these units fire continuously throughout the workday, accumulating metabolic waste and leading to chronic myalgia even at sub-threshold force levels.
+
+5.7 APDF Amplitude Distribution Percentiles (per side)
+
+The Amplitude Probability Distribution Function (Jonsson 1978, 1982) characterises the statistical shape of the muscular load distribution during the epoch — what amplitude level was exceeded X% of the time. Each percentile is computed on Active APDF samples only (RMS frames where %RVE ≥ 3.0%), excluding rest periods.
+
+Column
+
+Units
+
+Missingness
+
+Description
+
+apdf_10_left
+
+% RVE
+
+NULL if fully resting
+
+Left 10th percentile (static load level) — the amplitude exceeded 90% of the time during active work. Residual tonic activation: the load the muscle never drops below. High P10 = constant postural tension even in “relaxed” postures.
+
+apdf_50_left
+
+% RVE
+
+NULL if fully resting
+
+Left 50th percentile (median load) — the typical working amplitude. Most representative single number for habitual activation; used as input to the asymmetry index.
+
+apdf_90_left
+
+% RVE
+
+NULL if fully resting
+
+Left 90th percentile (peak load level) — the amplitude exceeded only 10% of the time. Marker of peak-load exposure and acute overload risk.
+
+apdf_10_right
+
+% RVE
+
+NULL if fully resting
+
+Same as apdf_10_left for the right trapezius.
+
+apdf_50_right
+
+% RVE
+
+NULL if fully resting
+
+Same as apdf_50_left for the right trapezius.
+
+apdf_90_right
+
+% RVE
+
+NULL if fully resting
+
+Same as apdf_90_left for the right trapezius.
+
+APDF interpretation (Jonsson 1982 criteria)
+
+Percentile
+
+Threshold
+
+Clinical implication
+
+APDF₁₀
+
+< 1% RVE
+
+Adequate rest (static load acceptable)
+
+APDF₁₀
+
+≥ 2–5% RVE
+
+Elevated static load risk
+
+APDF₅₀
+
+> 10–14% RVE
+
+High median exposure
+
+APDF₉₀
+
+> 20–50% RVE
+
+High peak load — acute injury risk
+
+5.8 Bilateral Asymmetry
+
+Column
+
+Type
+
+Range
+
+Missingness
+
+Description
+
+asymmetry_index_ai
+
+REAL
+
+[−1.0, +1.0]
+
+NULL if either side fully resting
+
+Signed laterality index (formula below). Negative = left-dominant loading; positive = right-dominant; 0.0 = perfect bilateral symmetry. An independent musculoskeletal risk factor — asymmetric loads generate uneven spinal torques and differential motor-unit fatigue between sides (Madeleine et al. 2008).
+
+asymmetry_penalty_applied
+
+INTEGER (bool)
+
+{0, 1}
+
+Never NULL
+
+Whether the 0.25-point asymmetry penalty was subtracted from the composite score. 1 = applied (|AI| > 0.5); 0 = not applied. Gives full explainability of composite score composition.
+
+AI  =  ( APDFactive50,R  −  APDFactive50,L )  ÷  ( APDFactive50,R  +  APDFactive50,L )
+
+APDF₅₀ = active-epoch median amplitude percentile; R = right side, L = left side
+
+5.9 Spectral Fatigue Indicators (per side)
+
+Quantify muscle fatigue via the frequency-domain signature of the sEMG signal. As trapezius fatigue develops, action-potential conduction velocity decreases and motor-unit firing rates slow, shifting spectral power toward lower frequencies. Median Power Frequency (MDF) is the gold-standard spectral fatigue indicator (De Luca 1997; Farina 2002).
+
+Critical caveat — embedded in every output record
+
+All spectral analysis uses the 20–240 Hz passband (hardware-constrained at 500 Hz sampling). The published De Luca/Farina standard uses 20–450 Hz (requires ≥ 1000 Hz sampling). Absolute MDF/MNF values are therefore systematically lower than published population norms. All spectral features must be interpreted as internal session-trend indicators only, never compared against published absolute baselines.
+
+Median & Mean Power Frequency
+
+∫20MDF S(f) df   =   ∫MDF240 S(f) df
+
+MDF splits the Welch power spectral density into two equal-power halves
+
+MNF  =  Σj fj × S(fj)   ÷   Σj S(fj)
+
+MNF — power-weighted spectral centroid; more sensitive to high-frequency content and noise than MDF
+
+Column
+
+Units
+
+Description
+
+mdf_hz_left / right
+
+Hz  [20–240]
+
+Median Power Frequency. Computed from the pre-rectification bandpass-filtered signal using Welch's method (1 s windows, 50% overlap, Hanning taper). A downward trend across epochs signals progressive fatigue. Typical unfatigued values: ~80–120 Hz (passband-constrained).
+
+mnf_hz_left / right
+
+Hz  [20–240]
+
+Mean Power Frequency — power-weighted spectral centroid. Complementary to MDF; logged for methodological completeness.
+
+Fatigue trend & data quality
+
+MDF(t)  =  β1 × t  +  β0
+
+OLS linear slope of MDF over time within the 5-minute epoch — negative β₁ = fatigue
+
+R2  =  1  −  SSres  ÷  SStot
+
+Proportion of MDF variance explained by the linear time trend
+
+Column
+
+Units
+
+Missingness
+
+Description
+
+fatigue_slope_left / right
+
+Hz/min
+
+NULL if insufficient data
+
+Key fatigue metric — a negative slope means MDF is declining, i.e. the muscle is fatiguing. Steeper negative slope = faster fatigue progression. High-force studies report ~−1.2 Hz/min; low-load occupational work is expected to be much smaller in magnitude.
+
+mdf_r_squared_left / right
+
+dimensionless [0,1]
+
+NULL if insufficient data
+
+Quality-control metric: whether the MDF trend is a clean linear decline (high R²) or noisy (low R²). The fatigue flag is only set if R² ≥ 0.30, preventing noisy slopes from triggering false positives.
+
+Column
+
+Units
+
+Missingness
+
+Description
+
+n_windows_left / right
+
+count
+
+0 if gated
+
+Number of Welch windows used in spectral estimation. ≈598 raw windows from a full 5-minute epoch; active-epoch gating (≥50% samples active) reduces this. Values below 5 suppress slope estimation entirely.
+
+mdf_computed_left / right
+
+bool {0,1}
+
+Never NULL
+
+Whether MDF was successfully computed. 1 = epoch sufficiently active; 0 = failed the active-ratio gate (≥50% samples above 3.0% RVE). Explicit missingness flag — distinguishes “muscle resting” from a data error, preventing the common mistake of imputing missing spectral data as 0 Hz.
+
+is_fatiguing_left / right
+
+bool {0,1}
+
+Never NULL
+
+Binary fatigue flag. Set to 1 only if BOTH: fatigue_slope < −0.3 Hz/min AND mdf_r_squared ≥ 0.30. The dual criterion prevents false positives from noisy slopes. Thresholds are conservative v1 placeholders, to be calibrated in v2.
+
+5.10 Subjective Strain Label (ML Target Variable)
+
+These two columns constitute the ground-truth target variable y for supervised learning.
+
+Column
+
+Type
+
+Range
+
+Missingness
+
+Description
+
+strain_reported
+
+INTEGER (bool)
+
+{0, 1}
+
+Never NULL
+
+Whether the subject submitted a Borg CR-10 rating at this epoch boundary. 1 = rating received; 0 = subject did not respond. Primary mechanism for handling missing self-reports — always written, even when no rating exists.
+
+subjective_strain_cr10
+
+REAL
+
+[0.0, 10.0] or NULL
+
+NULL when strain_reported = 0
+
+Ground-truth subjective muscular strain label (Borg CR-10, collected via non-blocking popup every 5-minute epoch boundary). 0 = nothing at all; 5 = strong (heavy working fatigue); 10 = absolute maximum. This is the regression target y.
+
+Missingness policy for the strain label (non-negotiable design requirement)
+
+Missing ratings are represented as NULL / empty string — never as a sentinel number such as −1 or 0. This is required because:
+
+1. Bayesian priors: sentinel values contaminate continuous prior distributions. A prior that treats y = −1 as a valid observation distorts posterior estimates by injecting a physically impossible data point.
+
+2. Forward-fill (LOCF) is prohibited: carrying the last observation forward would inflate the effective sample size by 150,000× at the raw 500 Hz sample level — pseudo-replication that destroys confidence intervals downstream.
+
+3. Backward-fill is prohibited: if the session terminates unexpectedly (hardware disconnect, battery failure), backward-filling from a future observation that was never recorded is impossible.
+
+4. Imputed zero is prohibited: a rating of 0.0 (“no exertion at all”) has a specific valid physiological meaning and must not be substituted for “no rating received.”
+
+6. Supplementary — Raw Telemetry Stream (_raw.csv)
+
+Each session also generates a companion high-frequency raw file, stored locally at output_logs/<user>/session_<timestamp>/session_<timestamp>_raw.csv (compressed to Parquet on session end).
+
+Granularity: one row per ADC sample, at 500 Hz → 500 rows per second → 150,000 rows per 5-minute epoch.
+
+Column
+
+Type
+
+Units
+
+Description
+
+sample_index
+
+INTEGER
+
+—
+
+Global 0-based sample counter from session start. Monotonically increasing; identifies every individual ADC sample.
+
+timestamp_s
+
+REAL
+
+seconds
+
+Wall-clock time since session start (float). Enables reconstruction of absolute timing even if the system clock resets.
+
+epoch_index
+
+INTEGER
+
+—
+
+Which 5-minute epoch this sample belongs to. Primary join key between the raw stream and the feature table.
+
+raw_adc_left
+
+INTEGER
+
+ADC counts
+
+Raw unsigned ADC value from the Left Arduino (COM6, pin A2, BioAmp EXG Pill). 14-bit resolution: [0, 16383]. Uncalibrated, unfiltered, unprocessed.
+
+raw_adc_right
+
+INTEGER
+
+ADC counts
+
+Same for the Right Arduino (COM5, pin A2).
+
+Why keep raw files separate from features?
+
+Feature files are the primary research dataset — compact, 38-column wide format, one row per 5 minutes
+
+Raw files are the archival master record — enable any future signal-processing algorithm to reprocess sessions from scratch (retrospective MDF estimation, novel filters, deep learning directly on raw waveforms)
+
+Separating them keeps _features.csv small enough for Excel/pandas analysis while preserving full reprocessability
+
+7. ML Variable Role Summary
+
+Variable group
+
+Columns
+
+ML role
+
+Notes
+
+Target (y)
+
+subjective_strain_cr10
+
+Continuous regression target (ordinal Bayesian)
+
+Only rows where strain_reported = 1 are labelled
+
+Missingness flag
+
+strain_reported
+
+Sample weight / missingness modelling
+
+Always 0 or 1, never NULL
+
+Time features
+
+epoch_index, elapsed_minutes
+
+Temporal position features
+
+Critical for within-session fatigue trajectory models
+
+Amplitude exposure
+
+eindex_live_left/right
+
+Primary load features
+
+Bounded [−2, +2]; directly from Koch (2024)
+
+Event frequency
+
+short_suma_penalty_left/right
+
+Risk fragmentation features
+
+[0, 1]; captures pulsatile loading patterns
+
+Burst count
+
+total_suma_bursts_left/right
+
+Count-based exposure features
+
+Unbounded; complementary to penalty
+
+Recovery
+
+gap_frequency_left/right
+
+Recovery / rest features
+
+Higher = better; key protective factor
+
+Load distribution
+
+apdf_10/50/90_left/right
+
+Distributional shape features (6 cols/side)
+
+Captures static, median, and peak load
+
+Asymmetry
+
+asymmetry_index_ai
+
+Bilateral balance feature
+
+[−1, +1]; independent risk axis
+
+Spectral fatigue
+
+mdf_hz, mnf_hz, fatigue_slope (L/R)
+
+Frequency-domain fatigue features
+
+Trend indicators only; not comparable to published norms
+
+Regression quality
+
+mdf_r_squared_left/right
+
+Data quality covariates
+
+Distinguish reliable vs. noisy spectral estimates
+
+Boolean flags
+
+mdf_computed, is_fatiguing (L/R), asymmetry_penalty_applied
+
+Binary indicator features
+
+Enable interaction terms and missingness-aware modelling
+
+Session context
+
+calibration_rms_left/right
+
+Normalisation provenance
+
+Include in models to adjust for calibration quality
+
+Subject covariates
+
+gender_sex, weight_kg, height_cm, birth_date
+
+Random effects / fixed covariates
+
+Used in hierarchical models to partition within- vs. between-subject variance
+
+Technical covariates
+
+processing_version
+
+Data provenance indicator
+
+Binary: phase11_edge_padding vs. legacy_constant_padding
+
+Total feature dimensionality (epoch_features only): 36 physiological predictors + 2 label/flag columns = 38 columns per row
+
+With joined session and subject context (v_ml_training_pairs): 38 + 9 session/subject columns ≈ 47 columns total
+
+8. Data Collection Protocol
+
+Session setup (per subject, per recording)
+
+1. Subject registration: subject enters name, birth date, sex, weight, and height into the GUI profile dialog. Creates a user_profiles row and a local user_profile.json.
+
+2. Hardware connection: two Arduino UNO R4 Minima identified via Device Manager (COM port numbers entered into start_lsl_stream.py). LSL stream started; GUI confirms stream discovery.
+
+3. Electrode placement: two Ag/AgCl surface electrodes per side placed on the upper trapezius belly (between C7 spinous process and acromion), with a reference electrode on a bony landmark (e.g. clavicle). Skin-electrode impedance is verified visually via the signal-quality indicator.
+
+4. 5-second RVE calibration: subject performs a maximal bilateral shoulder shrug for 5 seconds. Mean RMS during this period is stored as calibration_rms_left and calibration_rms_right. All subsequent %RVE values are normalised to these baselines.
+
+5. Task performance: subject performs their normal computer work task (typing, mousing, reading, etc.) under naturalistic conditions, with no imposed movement protocols.
+
+6. Every 5 minutes: a Borg CR-10 popup appears automatically. Subject enters perceived exertion on [0.0, 10.0] and clicks Submit. Skipping the dialog sets strain_reported = 0, subjective_strain_cr10 = NULL.
+
+7. Session end: subject clicks Stop Recording. end_session() writes CSVs/Parquet to disk first, then triggers asynchronous background cloud sync over HTTPS/Port 443.
+
+Recording environment constraints
+
+EMG signal processing starts only after the calibration shrug completes
+
+Sessions with failed calibration (calibration_rms_left = NULL or 0) are flagged uncalibrated
+
+Mains interference (50 Hz spike) is auto-detected via PSD comparison and a notch filter is applied automatically
+
+9. Missingness & Data Quality Policy
+
+Scenario
+
+Handling
+
+Rationale
+
+Subject skips Borg rating
+
+strain_reported = 0, subjective_strain_cr10 = NULL
+
+Explicit, model-compatible missingness; forward-fill prohibited
+
+Epoch predominantly resting (< 50% active samples)
+
+mdf_computed_left/right = 0, spectral columns = NULL
+
+Avoids fitting a PSD to the electrical noise floor
+
+Fewer than 5 active Welch windows
+
+fatigue_slope = NULL, mdf_r_squared = NULL, is_fatiguing = 0
+
+Prevents a meaningless 2-point OLS regression
+
+Uncalibrated session
+
+calibration_rms = NULL; normalized column in raw data = NaN
+
+Downstream models flag and optionally exclude uncalibrated rows
+
+One side fully resting
+
+asymmetry_index_ai = NULL, asymmetry_penalty_applied = 0
+
+Asymmetry is undefined when the denominator = 0
+
+Network failure during cloud sync
+
+All local files intact; retry possible via CLI batch uploader
+
+Disk-first architecture — local storage is always written before network
+
+Session crash / power loss
+
+Partial session retained; end_time = NULL
+
+Raw CSV flushed per second; features written per epoch
+
+10. Dataset Statistics (Expected at Full Collection)
+
+Metric
+
+Expected value
+
+Sessions per subject
+
+~5–20 (pilot study)
+
+Session duration
+
+30–120 minutes
+
+Epochs per session
+
+6–24 (at 5-minute intervals)
+
+Rows in epoch_features per subject
+
+~60–480
+
+Raw samples per session (both channels)
+
+9M – 72M samples
+
+Labelled epochs (strain_reported = 1)
+
+~70–90% (subject compliance dependent)
+
+Feature dimensionality
+
+38 columns
+
+Feature types
+
+28 REAL, 6 INTEGER/boolean, 4 identifier
+
+Total NULL-allowed columns in epoch_features
+
+18 (all spectral + APDF columns)
+
+Total NOT-NULL columns in epoch_features
+
+20 (identifiers, EIndex, SUMA, gaps, flags)
+
+This document was generated from, and is directly consistent with, the source schema defined in cloud_schema.py and the CSV header defined in local_logger.py. Every column listed here corresponds to an exact column in the live database and CSV output files.

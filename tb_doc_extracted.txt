@@ -1,0 +1,257 @@
+TensionBudget — Full Mathematical Pipeline Documentation
+
+Author: TensionBudget Research Team
+
+Document version: Phase 13 / W7 (2026-08-05)
+
+Purpose: Professor-ready derivation of every algorithm and formula in the bilateral upper-trapezius sEMG ergonomic surveillance system, from hardware acquisition to cloud-persisted ML feature vectors.
+
+Table of Contents
+
+Signal Acquisition & ADC Conversion
+
+Stage 2 — Digital Signal Pre-Processing
+
+Stage 3 — Amplitude Analytics
+
+Stage 4 — Composite Tension Budget Scoring
+
+Stage 5 — Spectral Fatigue Analysis (MDF / MNF)
+
+Stage 6 — Subjective Strain Elicitation (Borg CR-10)
+
+Stage 7 — 5-Minute Epoch Feature Vector (ML Target)
+
+Stage 8 — Cloud Persistence & Idempotent Upsert
+
+Full Pipeline Flow Diagram
+
+Parameter Reference Table
+
+Literature References
+
+1. Signal Acquisition & ADC Conversion
+
+Hardware Setup
+
+Two Arduino UNO R4 Minima microcontrollers, each paired with a BioAmp EXG Pill analog front-end, acquire bilateral trapezius surface EMG (sEMG) independently:
+
+Parameter
+
+Value
+
+Rationale
+
+Sampling rate 
+
+Nyquist limit  safely above the  passband ceiling
+
+ADC resolution
+
+14-bit (UNO R4)
+
+ quantisation levels
+
+Serial baud rate
+
+230,400 baud
+
+Sufficient to stream 6-channel packets at  without buffer overflow
+
+Channels per unit
+
+6 transmitted, 2 used (A2)
+
+LSL channel  = Left trapezius, channel  = Right trapezius
+
+Raw-to-Voltage Conversion (Optional)
+
+where ,  is the ADC reference voltage in Volts, and  is sample index. For ratiometric analyses (e.g., ), raw integer counts are used directly; voltage conversion is not required.
+
+Note: The BioAmp EXG Pill contains its own differential instrumentation amplifier and analog gain stage before the ADC. Therefore  represents the amplified signal at the ADC input, not the raw skin-surface electrode potential.
+
+2. Stage 2 — Digital Signal Pre-Processing
+
+Each channel (Left, Right) is processed independently through a deterministic 6-stage pipeline. No cross-channel mixing occurs before the final asymmetry computation.
+
+Pipeline order (offline mode — zero-phase):
+
+2.1 Bandpass Butterworth Filter ()
+
+Purpose: Remove sub- motion artifact / DC offset and above- noise and aliasing components, retaining the physiologically relevant sEMG band.
+
+Design: 4th-order zero-phase Butterworth bandpass filter, implemented via scipy.signal.sosfiltfilt (offline) or sosfilt with persistent state  (live streaming).
+
+The Butterworth transfer function in the -domain is determined by the design equation:
+
+where  is the filter order and  is the critical frequency. For the bandpass design, two normalised critical frequencies are defined:
+
+Zero-Phase (offline): Forward-backward filtering via sosfiltfilt achieves exactly zero group delay:
+
+This doubles the effective attenuation roll-off: a 4th-order design becomes effectively 8th-order in stopband rejection after forward-backward application ().
+
+Causal (live): sosfilt with persistent second-order-sections state  processes incoming chunks without introducing edge artifacts. Introduces group delay of  samples at mid-band, which is negligible at .
+
+Parameters:
+
+Parameter
+
+Value
+
+Source
+
+De Luca (1997); Farina et al. (2002)
+
+Nyquist-constrained: 
+
+Order 
+
+4
+
+Standard EMG pre-processing
+
+Architecture
+
+Butterworth SOS
+
+Numerically stable second-order section cascade
+
+Important Passband Limitation: De Luca (1997) and Farina (2002) specify a  passband, which requires . Our hardware is locked at , meaning signal power above  is excluded. All MDF/MNF values computed downstream are systematically lower than published population norms and must be interpreted as internal session trend indicators only — not compared against published absolute baselines.
+
+2.2 Mains Interference Notch Filter ()
+
+Purpose: Remove narrowband mains electrical interference at  (India/EU grid frequency).
+
+Design: IIR notch filter (2nd-order all-pass minus unity) with quality factor . The transfer function is:
+
+where the pole radius  controls bandwidth. At : bandwidth .
+
+2.3 Full-Wave Rectification
+
+Full-wave rectification reflects negative half-cycles into the positive domain. This is a mandatory preparatory step for the RMS envelope (Stage 2.4) but is explicitly bypassed for the spectral fatigue analysis (Stage 5). Rectification introduces strong harmonic distortion at DC, , , etc. — if Welch PSD estimation were applied to , the harmonic energy would completely invalidate MDF/MNF estimates.
+
+2.4 RMS Amplitude Envelope
+
+Purpose: Smooth the rectified signal into a physiologically interpretable amplitude envelope representing muscle activation intensity at each moment.
+
+Formula (per sliding window of  samples):
+
+where:
+
+ ( window at )
+
+ ( step   overlap between adjacent estimates)
+
+ is the window index
+
+2.5 Reference Voluntary Exertion (%RVE) Normalisation
+
+Purpose: Convert absolute RMS amplitude (arbitrary ADC units) into a dimensionless percentage relative to each subject's individual maximum voluntary reference exertion.
+
+Normalisation formula:
+
+3. Stage 3 — Amplitude Analytics
+
+3.1 Gap / Micro-Rest Detection
+
+Detection rule: A contiguous run of consecutive RMS samples is classified as a gap if:
+
+with minimum duration:
+
+3.2 SUMA — Sustained Muscle Activity Detection
+
+Detection rule: A SUMA event is any contiguous run where:
+
+with minimum duration:
+
+3.3 APDF — Amplitude Probability Distribution Function
+
+Formula:
+
+The  from the Active APDF (samples ) is the primary input to the bilateral Asymmetry Index.
+
+4. Stage 4 — Composite Tension Budget Scoring
+
+4.1 Exposure Index (EIndex)
+
+Three-zone partition weights:
+
+Rest (): 
+
+Low (): 
+
+High (): 
+
+EIndex formula:
+
+where  represents the proportion of time spent in each zone.
+
+4.2 Short-SUMA Frequency Penalty
+
+4.3 Bilateral Asymmetry Index
+
+4.4 Composite Score — Bilateral Fusion & Floor Clamp
+
+Step 1: 
+
+Step 2:  if , else 
+
+Step 3: 
+
+5. Stage 5 — Spectral Fatigue Analysis (MDF / MNF)
+
+5.1 Welch's Power Spectral Density (PSD)
+
+The PSD estimate  is calculated using the Welch method:
+
+where  is the periodogram of the -th Hanning-windowed segment.
+
+5.2 Median Power Frequency (MDF)
+
+MDF is defined as the frequency satisfying:
+
+5.3 Mean Power Frequency (MNF)
+
+MNF is the power-weighted centroid:
+
+5.4 OLS Fatigue Slope
+
+The decline in MDF over time is modeled using a linear trend:
+
+The slope  (Hz/min) indicates the rate of muscular fatigue.
+
+6. Stage 6 — Subjective Strain Elicitation (Borg CR-10)
+
+The subjective target variable  is mapped as:
+
+where  is the 38-column feature vector generated every 5 minutes.
+
+7. Stage 7 — Parameter Reference Table
+
+Parameter
+
+Symbol
+
+Value
+
+Bandpass low
+
+Bandpass high
+
+RMS window
+
+Gap threshold
+
+Rest threshold
+
+—
+
+High threshold
+
+—
+
+Slope threshold
+
+Minimum 
+
+This document is consistent with the source implementation in Phase 13 / W7.
