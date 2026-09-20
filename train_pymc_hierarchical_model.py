@@ -22,6 +22,8 @@ import os
 import json
 import numpy as np
 import pandas as pd
+import os
+os.environ["PYTENSOR_FLAGS"] = "cxx="  # Disable C-compilation to fix 32-bit MinGW errors on 64-bit Windows
 import pymc as pm
 import arviz as az
 from sklearn.preprocessing import StandardScaler
@@ -99,9 +101,11 @@ def prepare_dataset(csv_path):
 def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_users, n_features, p0=5):
     """
     Builds a PyMC Model with:
-    - Random Intercepts per user (alpha_u)
-    - Random Slopes per user (beta_u[u, k])
-    - Regularized Horseshoe Prior on population feature weights (beta_pop[k])
+    - Random Intercepts per user (alpha_u)  — one offset per subject
+    - Population-level feature slopes (beta_pop[k]) shared across all users,
+      regularized by the Piironen & Vehtari (2017) regularized horseshoe prior
+    NOTE: Per-user random slopes (beta_u) are intentionally omitted — with
+    ~6 subjects and ~500-600 rows the model is unidentifiable at that level.
     """
     with pm.Model() as model:
         # Data Containers
@@ -123,7 +127,10 @@ def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_
        
         tau = pm.HalfCauchy("tau", beta=tau_0)
         lam = pm.HalfCauchy("lam", beta=1.0, shape=n_features)
-        c2 = pm.InverseGamma("c2", alpha=1.0, beta=1.0)
+        # Piironen & Vehtari (2017) recommended slab prior: nu=4, s=2
+        # => alpha = nu/2 = 2,  beta = (nu/2)*s^2 = 8
+        # alpha=1/beta=1 has infinite variance and destabilises the slab scale.
+        c2 = pm.InverseGamma("c2", alpha=2.0, beta=8.0)
        
         # Regularized shrinkage scale
         tilde_lam = pm.Deterministic("tilde_lam", pm.math.sqrt(c2 * lam**2 / (c2 + tau**2 * lam**2)))
@@ -132,19 +139,15 @@ def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_
         beta_pop_offset = pm.Normal("beta_pop_offset", mu=0, sigma=1, shape=n_features)
         beta_pop = pm.Deterministic("beta_pop", beta_pop_offset * tau * tilde_lam)
        
-        # 3. User-Specific Random Slopes (beta_u[u, k]) — Hierarchical Partial Pooling
-        tau_beta = pm.HalfNormal("tau_beta", sigma=0.2, shape=n_features)
-        beta_offset = pm.Normal("beta_offset", mu=0, sigma=1, shape=(n_users, n_features))
-        beta_u = pm.Deterministic("beta_u", beta_pop + beta_offset * tau_beta)
+        # 3. Linear Predictor (mu_i)
+        # Population slopes are shared; user variation is captured by alpha_u alone.
+        # mu = alpha_u[user_idx] + X @ beta_pop
+        mu = alpha_u[u_idx] + pm.math.dot(X_data, beta_pop)
        
-        # 4. Linear Predictor (mu_i)
-        # mu = alpha_u[user_idx] + sum_k (beta_u[user_idx, k] * X[i, k])
-        mu = alpha_u[u_idx] + pm.math.sum(beta_u[u_idx] * X_data, axis=1)
-       
-        # 5. Residual Noise Variance
+        # 4. Residual Noise Variance
         sigma_y = pm.HalfNormal("sigma_y", sigma=1.5)
        
-        # 6. Observed Likelihood
+        # 5. Observed Likelihood
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma_y, observed=y_data)
        
     return model
@@ -176,9 +179,14 @@ def run_full_bayes_workflow(df, predictors):
     model = build_pymc_hierarchical_horseshoe_model(X_scaled, y_vals, user_indices, n_users, n_features)
    
     with model:
-        prior_draws = pm.sample_prior_predictive(samples=200, random_seed=42)
+        prior_draws = pm.sample_prior_predictive(draws=200, random_seed=42)
     prior_y = prior_draws.prior_predictive["y_obs"].values.flatten()
-    print(f"Prior Predictive Strain Range: [{np.min(prior_y):.2f}, {np.max(prior_y):.2f}] (Plausible continuous strain prior)")
+    frac_in_range = np.mean((prior_y >= 0.0) & (prior_y <= 10.0))
+    print(f"Prior Predictive Strain Range: [{np.min(prior_y):.2f}, {np.max(prior_y):.2f}] "
+          f"| Fraction within physical [0,10] Borg range: {frac_in_range:.1%}")
+    if frac_in_range < 0.5:
+        print("WARNING: Less than 50% of prior predictive draws fall within the physical Borg CR-10 range. "
+              "Priors on alpha_pop/sigma_y may be too diffuse.")
    
     print("\n=======================================================")
     print("STEP 2: PYMC NUTS SAMPLING (FULL POSTERIOR FITTING)")
@@ -187,16 +195,18 @@ def run_full_bayes_workflow(df, predictors):
         idata = pm.sample(
             draws=1000,
             tune=1000,
-            chains=2,
+            chains=4,
             target_accept=0.95,
             random_seed=42,
+            progressbar=False,
             return_inferencedata=True
         )
        
     print("\n=======================================================")
     print("STEP 3: CONVERGENCE DIAGNOSTICS (R-HAT, ESS, DIVERGENCES)")
     print("=======================================================")
-    summary = az.summary(idata, var_names=["alpha_pop", "sigma_y", "beta_pop"])
+    # Cover ALL parameters, not just three — catches any badly mixing group.
+    summary = az.summary(idata)
     rhat_max = summary["r_hat"].max()
     ess_min = summary["ess_bulk"].min()
    
@@ -209,8 +219,12 @@ def run_full_bayes_workflow(df, predictors):
    
     if rhat_max <= 1.05 and divergences == 0:
         print(">> CONVERGENCE CHECK PASSED: MCMC chains mixed smoothly with zero divergences!")
+        convergence_ok = True
     else:
         print(">> CONVERGENCE WARNING: Review priors or step size.")
+        print("!! CONVERGENCE FAILED — do not trust posterior summaries or exported weights "
+              "until this is fixed. Continuing run for debugging purposes only.")
+        convergence_ok = False
        
     print("\n=======================================================")
     print("STEP 4: POSTERIOR PREDICTIVE CHECK")
@@ -270,7 +284,7 @@ def run_full_bayes_workflow(df, predictors):
         sub_model = build_pymc_hierarchical_horseshoe_model(X_tr, y_tr, u_tr, len(sub_user_map), n_features)
        
         with sub_model:
-            sub_idata = pm.sample(draws=500, tune=500, chains=2, target_accept=0.95, progressbar=False, random_seed=42)
+            sub_idata = pm.sample(draws=500, tune=500, chains=4, target_accept=0.95, progressbar=False, random_seed=42)
            
         # Predict for unseen test user using population posterior distributions (alpha_pop, beta_pop)
         alpha_pop_draws = sub_idata.posterior["alpha_pop"].values.flatten()
@@ -344,7 +358,8 @@ def run_full_bayes_workflow(df, predictors):
         "diagnostics": {
             "r_hat_max": float(rhat_max),
             "ess_bulk_min": float(ess_min),
-            "divergence_count": divergences
+            "divergence_count": divergences,
+            "converged": convergence_ok
         },
         "scaler_means": dict(zip(predictors, scaler.mean_)),
         "scaler_stds": dict(zip(predictors, scaler.scale_)),
