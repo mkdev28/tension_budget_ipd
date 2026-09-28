@@ -1,0 +1,33 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # Runs every 3 days at 00:00 UTC to keep Supabase free-tier project active
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # Allows manual execution from GitHub Actions tab
+
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API Gateway
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          # Fallback to hardcoded URL if secret is not set yet
+          TARGET_URL="${SUPABASE_URL:-https://khsrpxzckidhmzdpihfu.supabase.co}"
+          
+          echo "Pinging Supabase at: ${TARGET_URL}/rest/v1/"
+          
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${TARGET_URL}/rest/v1/")
+            
+          echo "Received HTTP status code: ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
+            echo "Successfully pinged Supabase project. Activity registered!"
+          else
+            echo "Warning: Received status ${HTTP_STATUS}. Check your API keys and project status."
+          fi
