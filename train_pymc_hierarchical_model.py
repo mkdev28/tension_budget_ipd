@@ -1,29 +1,31 @@
 """
 train_pymc_hierarchical_model.py — True Bayesian Hierarchical Model with Regularized Horseshoe Prior
-and NUTS Sampling in PyMC.
+and NUTS Sampling in PyMC for TensionBudget.
  
 Architecture & Spec Compliance:
-1. Random Intercepts (alpha_u) per user: alpha_u ~ Normal(alpha_pop, tau_alpha)
-2. Random Slopes (beta_u[u, k]) per user: beta_u[u, k] ~ Normal(beta_pop[k], tau_beta[k])
-3. Regularized Horseshoe Prior for Population Slopes (beta_pop[k]):
+1. Data Ingestion: Live cloud sync from Supabase `v_ml_training_pairs` view.
+2. Random Intercepts (alpha_u) per user: alpha_u ~ Normal(alpha_pop, tau_alpha)
+3. Random Slopes (beta_u[u, k]) per user: beta_u[u, k] ~ Normal(beta_pop[k], tau_beta[k])
+4. Regularized Horseshoe Prior for Population Slopes (beta_pop[k]):
    beta_pop[k] ~ Normal(0, tau * tilde_lambda_k)
    lambda_k ~ HalfCauchy(1.0)
    tau ~ HalfCauchy(tau_0)
    c^2 ~ InverseGamma(1.0, 1.0)
    tilde_lambda_k = sqrt(c^2 * lambda_k^2 / (c^2 + tau^2 * lambda_k^2))
-4. NUTS Sampling: pm.sample(draws=1000, tune=1000, chains=4, target_accept=0.95)
-5. MCMC Diagnostics: ArViZ summary calculating R-hat (R_hat <= 1.05), ESS (> 400), and Divergence Check (divergences == 0).
-6. Posterior Predictive Check: pm.sample_posterior_predictive.
-7. Leave-One-Subject-Out (LOSO) Cross-Validation.
-8. Artifact Export: exports true posterior parameters (mean, SD, 90% HDI) to 'tensionbudget_model_weights.json'.
+5. NUTS Sampling: pm.sample(draws=1000, tune=1000, chains=2, target_accept=0.95)
+6. MCMC Diagnostics: ArViZ summary calculating R-hat, ESS, and Divergences.
+7. Posterior Predictive Check & Leave-One-Subject-Out (LOSO) Cross-Validation.
+8. Artifact Export: exports true posterior parameters to 'tensionbudget_model_weights.json'.
 """
- 
+
+
 import os
 import json
 import numpy as np
 import pandas as pd
 import pymc as pm
 import arviz as az
+from supabase import create_client, Client
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
  
@@ -31,7 +33,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 # 1. CONSTANTS & CONFIGURATION
 # ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_PATH = os.path.join(BASE_DIR, 'Supabase Snippet Untitled query.csv')
 OUTPUT_WEIGHTS_PATH = os.path.join(BASE_DIR, 'tensionbudget_model_weights.json')
 TESTER_USERS = ['FeatureTester', 'PayloadTester', 'SchemaTester']
  
@@ -57,54 +58,69 @@ TREND_COLS = [
  
 ALL_PREDICTORS = PREDICTOR_COLS + TREND_COLS
  
-def prepare_dataset(csv_path):
-    print(f"Loading dataset from: {csv_path}")
-    df = pd.read_csv(csv_path)
-   
-    # 1. Filter out tester accounts
+def prepare_dataset():
+    print("Fetching live dataset from Supabase...")
+    url = "" 
+    key = "" 
+    supabase: Client = create_client(url, key)
+    response = supabase.table('v_ml_training_pairs').select('*').execute()
+    df = pd.DataFrame(response.data)
+    
+    if len(df) == 0:
+        raise ValueError("Supabase returned 0 rows. Double-check your API key and URL.")
+        
+    print(f"Total live records fetched: {len(df)}")
+    # Query all records from the pre-joined view
+    
+    
+    # 1. Filter out synthetic test accounts & unify duplicate names
     initial_len = len(df)
     df = df[~df['user_name'].isin(TESTER_USERS)].copy()
-    print(f"Filtered out test accounts ({TESTER_USERS}). Rows remaining: {len(df)} / {initial_len}")
+    df['user_name'] = df['user_name'].replace({'Lavish': 'Lavish Jain'})
+    print(f"Filtered test accounts. Rows remaining: {len(df)} / {initial_len}")
    
-    # 2. Filter to labeled reported strain rows only
+    # 2. Filter to explicitly labeled reported strain rows
     df = df[df['strain_reported'] == 1].copy()
     df = df[df['subjective_strain_cr10'].notna()].copy()
     print(f"Filtered to labeled rows. Rows remaining: {len(df)}")
    
     # 3. Sort chronologically per session
     df['session_id'] = df['session_id'].astype(str)
-    df = df.sort_values(by=['session_id', 'epoch_index']).reset_index(drop=True)
+    if 'epoch_index' in df.columns:
+        df = df.sort_values(by=['session_id', 'epoch_index']).reset_index(drop=True)
+    else:
+        df['epoch_index'] = df.groupby('session_id').cumcount() + 1
+        df = df.sort_values(by=['session_id', 'epoch_index']).reset_index(drop=True)
    
     # 4. Compute Trajectory/Trend features (t-1 to t) per session
     for side in ['left', 'right']:
-        df[f'mdf_trend_{side}'] = df.groupby('session_id')[f'mdf_hz_{side}'].diff().fillna(0.0)
-        df[f'gap_freq_trend_{side}'] = df.groupby('session_id')[f'gap_frequency_{side}'].diff().fillna(0.0)
-        df[f'eindex_trend_{side}'] = df.groupby('session_id')[f'eindex_live_{side}'].diff().fillna(0.0)
+        mdf_col = f'mdf_hz_{side}'
+        gap_col = f'gap_frequency_{side}'
+        eind_col = f'eindex_live_{side}'
+        
+        df[f'mdf_trend_{side}'] = df.groupby('session_id')[mdf_col].diff().fillna(0.0) if mdf_col in df.columns else 0.0
+        df[f'gap_freq_trend_{side}'] = df.groupby('session_id')[gap_col].diff().fillna(0.0) if gap_col in df.columns else 0.0
+        df[f'eindex_trend_{side}'] = df.groupby('session_id')[eind_col].diff().fillna(0.0) if eind_col in df.columns else 0.0
        
     # 5. Construct Future Pain Target (t + 5 min forecast)
     df['target_future_strain'] = df.groupby('session_id')['subjective_strain_cr10'].shift(-1)
    
-    # Drop rows where target_future_strain is NaN (last epoch of each session)
+    # Drop the final epoch of each session (no future target available)
     df_forecast = df[df['target_future_strain'].notna()].copy().reset_index(drop=True)
     print(f"Constructed t+5min target ('target_future_strain'). Valid forecasting pairs: {len(df_forecast)}")
    
-    # 6. Impute missing predictor values gracefully
-    for col in PREDICTOR_COLS:
-        if df_forecast[col].isna().sum() > 0:
+    # 6. Impute any missing predictor values
+    for col in ALL_PREDICTORS:
+        if col not in df_forecast.columns:
+            df_forecast[col] = 0.0
+        elif df_forecast[col].isna().sum() > 0:
             median_val = df_forecast[col].median()
             df_forecast[col] = df_forecast[col].fillna(median_val if not pd.isna(median_val) else 0.0)
            
     return df_forecast
  
 def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_users, n_features, p0=5):
-    """
-    Builds a PyMC Model with:
-    - Random Intercepts per user (alpha_u)
-    - Random Slopes per user (beta_u[u, k])
-    - Regularized Horseshoe Prior on population feature weights (beta_pop[k])
-    """
     with pm.Model() as model:
-        # Data Containers
         u_idx = pm.Data("u_idx", user_idx_train)
         X_data = pm.Data("X_data", X_train)
         y_data = pm.Data("y_data", y_train)
@@ -116,7 +132,6 @@ def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_
         alpha_u = pm.Deterministic("alpha_u", alpha_pop + alpha_offset * tau_alpha)
        
         # 2. Regularized Horseshoe Prior (Piironen & Vehtari 2017)
-        # Expected active features p0 = 5
         N = len(y_train)
         sigma_0 = 1.0
         tau_0 = (p0 / (n_features - p0)) * (sigma_0 / np.sqrt(N))
@@ -125,39 +140,26 @@ def build_pymc_hierarchical_horseshoe_model(X_train, y_train, user_idx_train, n_
         lam = pm.HalfCauchy("lam", beta=1.0, shape=n_features)
         c2 = pm.InverseGamma("c2", alpha=1.0, beta=1.0)
        
-        # Regularized shrinkage scale
         tilde_lam = pm.Deterministic("tilde_lam", pm.math.sqrt(c2 * lam**2 / (c2 + tau**2 * lam**2)))
        
-        # Population feature slopes
         beta_pop_offset = pm.Normal("beta_pop_offset", mu=0, sigma=1, shape=n_features)
         beta_pop = pm.Deterministic("beta_pop", beta_pop_offset * tau * tilde_lam)
        
-        # 3. User-Specific Random Slopes (beta_u[u, k]) — Hierarchical Partial Pooling
+        # 3. User-Specific Random Slopes
         tau_beta = pm.HalfNormal("tau_beta", sigma=0.2, shape=n_features)
         beta_offset = pm.Normal("beta_offset", mu=0, sigma=1, shape=(n_users, n_features))
         beta_u = pm.Deterministic("beta_u", beta_pop + beta_offset * tau_beta)
        
-        # 4. Linear Predictor (mu_i)
-        # mu = alpha_u[user_idx] + sum_k (beta_u[user_idx, k] * X[i, k])
+        # 4. Linear Predictor
         mu = alpha_u[u_idx] + pm.math.sum(beta_u[u_idx] * X_data, axis=1)
        
-        # 5. Residual Noise Variance
+        # 5. Residual Noise Variance & Likelihood
         sigma_y = pm.HalfNormal("sigma_y", sigma=1.5)
-       
-        # 6. Observed Likelihood
         y_obs = pm.Normal("y_obs", mu=mu, sigma=sigma_y, observed=y_data)
        
     return model
  
 def run_full_bayes_workflow(df, predictors):
-    """
-    Executes the Complete Bayesian Workflow (Gelman et al.):
-    1. Prior Predictive Check
-    2. PyMC NUTS Fitting
-    3. Convergence Diagnostics (R-hat, ESS, Divergences)
-    4. Posterior Predictive Check
-    5. Leave-One-Subject-Out Cross Validation
-    """
     unique_users = list(df['user_name'].unique())
     user_map = {u: i for i, u in enumerate(unique_users)}
     df['user_idx'] = df['user_name'].map(user_map)
@@ -176,7 +178,8 @@ def run_full_bayes_workflow(df, predictors):
     model = build_pymc_hierarchical_horseshoe_model(X_scaled, y_vals, user_indices, n_users, n_features)
    
     with model:
-        prior_draws = pm.sample_prior_predictive(samples=200, random_seed=42)
+        prior_draws = pm.sample_prior_predictive(draws=200, random_seed=42)
+        
     prior_y = prior_draws.prior_predictive["y_obs"].values.flatten()
     print(f"Prior Predictive Strain Range: [{np.min(prior_y):.2f}, {np.max(prior_y):.2f}] (Plausible continuous strain prior)")
    
@@ -200,7 +203,6 @@ def run_full_bayes_workflow(df, predictors):
     rhat_max = summary["r_hat"].max()
     ess_min = summary["ess_bulk"].min()
    
-    # Count Hamiltonian divergences
     divergences = int(idata.sample_stats["diverging"].sum().values)
    
     print(f"Max R-hat across parameters: {rhat_max:.4f} (Target: <= 1.05)")
@@ -237,9 +239,6 @@ def run_full_bayes_workflow(df, predictors):
     print(f"Posterior Predictive Corr: {corr_train:.3f}")
     print(f"90% Credible Interval Coverage: {coverage_train:.1f}%")
    
-    # ---------------------------------------------------------
-    # STEP 5: LEAVE-ONE-SUBJECT-OUT (LOSO) CROSS-VALIDATION
-    # ---------------------------------------------------------
     print("\n=======================================================")
     print("STEP 5: LEAVE-ONE-SUBJECT-OUT (LOSO) CROSS-VALIDATION")
     print("=======================================================")
@@ -272,19 +271,17 @@ def run_full_bayes_workflow(df, predictors):
         with sub_model:
             sub_idata = pm.sample(draws=500, tune=500, chains=2, target_accept=0.95, progressbar=False, random_seed=42)
            
-        # Predict for unseen test user using population posterior distributions (alpha_pop, beta_pop)
         alpha_pop_draws = sub_idata.posterior["alpha_pop"].values.flatten()
         beta_pop_draws = sub_idata.posterior["beta_pop"].values.reshape(-1, n_features)
         sigma_draws = sub_idata.posterior["sigma_y"].values.flatten()
        
-        # Draw posterior predictive predictions
         test_preds_samples = []
         for d_idx in range(len(alpha_pop_draws)):
             mu_test = alpha_pop_draws[d_idx] + np.dot(X_te, beta_pop_draws[d_idx])
             sample_draw = np.random.normal(mu_test, sigma_draws[d_idx])
             test_preds_samples.append(sample_draw)
            
-        test_preds_samples = np.clip(np.array(test_preds_samples), 0.0, 10.0) # shape (draws, N_test)
+        test_preds_samples = np.clip(np.array(test_preds_samples), 0.0, 10.0) 
        
         sub_pred_mean = np.mean(test_preds_samples, axis=0)
         sub_ci_low = np.percentile(test_preds_samples, 5, axis=0)
@@ -319,9 +316,9 @@ def run_full_bayes_workflow(df, predictors):
     print(f"LOSO 90% CI Coverage: {loso_cov:.1f}%")
     print("=======================================================\n")
    
-    # ---------------------------------------------------------
-    # STEP 6: EXPORT FINAL MODEL WEIGHTS & POSTERIOR SUMMARIES
-    # ---------------------------------------------------------
+    print("\n=======================================================")
+    print("STEP 6: EXPORT FINAL MODEL WEIGHTS & POSTERIOR SUMMARIES")
+    print("=======================================================")
     alpha_pop_mean = float(summary.loc["alpha_pop", "mean"])
     sigma_y_mean = float(summary.loc["sigma_y", "mean"])
    
@@ -366,6 +363,5 @@ def run_full_bayes_workflow(df, predictors):
     return export_dict
  
 if __name__ == '__main__':
-    df_prepared = prepare_dataset(DATASET_PATH)
+    df_prepared = prepare_dataset()
     run_full_bayes_workflow(df_prepared, ALL_PREDICTORS)
- 

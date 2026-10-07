@@ -167,6 +167,15 @@ class TensionBudgetApp(QMainWindow):
         self.epoch_filt_l = []
         self.epoch_filt_r = []
 
+        # ML Model Weights & Live Predictor State
+        self.prev_mdf_l = None
+        self.prev_mdf_r = None
+        self.prev_gap_freq_l = None
+        self.prev_gap_freq_r = None
+        self.prev_eindex_l = None
+        self.prev_eindex_r = None
+        self._load_ml_model_weights()
+
         # UI Setup
         self._init_ui()
         
@@ -174,6 +183,21 @@ class TensionBudgetApp(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_loop)
         self.timer.start(20)
+
+    def _load_ml_model_weights(self):
+        self.ml_weights = None
+        self.ml_loaded = False
+        weights_file = Path("tensionbudget_model_weights.json")
+        if not weights_file.exists():
+            weights_file = Path(__file__).resolve().parent.parent / "tensionbudget_model_weights.json"
+        if weights_file.exists():
+            try:
+                with open(weights_file, "r", encoding="utf-8") as f:
+                    self.ml_weights = json.load(f)
+                    self.ml_loaded = True
+                    print(f"Successfully loaded ML model weights from {weights_file}")
+            except Exception as e:
+                print(f"Notice: Failed to load ML model weights: {e}")
 
     def _init_ui(self):
         central_widget = QWidget()
@@ -252,6 +276,12 @@ class TensionBudgetApp(QMainWindow):
         ctrl_box.setLayout(ctrl_layout)
         main_layout.addWidget(ctrl_box)
 
+        # ── Top Live Alert Banner (Visible Across All Tabs) ──
+        self.lbl_top_alert_banner = QLabel("🟢 NORMAL MONITORING STATE: Trapezius Load Within Safe Range.")
+        self.lbl_top_alert_banner.setStyleSheet("background-color: #2b6f39; color: white; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;")
+        self.lbl_top_alert_banner.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.lbl_top_alert_banner)
+
         # ── Subjective Strain (Borg CR-10) Target Variable Bar for Bayesian Hierarchy Models ──
         strain_box = QGroupBox("Subjective Self-Report (Borg CR-10 / Bayesian Target Label $y$)")
         strain_layout = QHBoxLayout()
@@ -306,6 +336,34 @@ class TensionBudgetApp(QMainWindow):
         # Tab 2: Analytics & Scoring Dashboard
         tab_dashboard = QWidget()
         dash_layout = QVBoxLayout()
+
+        # ── ML Pain Forecast & Real-Time Alert Engine Card ──
+        ml_box = QGroupBox("🧠 Real-Time Bayesian ML 5-Min Pain Forecast & Ergonomic Feedback Engine")
+        ml_layout = QVBoxLayout()
+        
+        self.lbl_ml_forecast = QLabel("Predicted Pain Score (t + 5 min): 0.00 / 10.0 (Borg Scale)")
+        self.lbl_ml_forecast.setStyleSheet("font-size: 16px; font-weight: bold; color: #4a235a;")
+        
+        self.lbl_ml_ci = QLabel("90% Credible Interval: [0.00, 0.00] | residual σ = 0.85")
+        self.lbl_ml_ci.setStyleSheet("font-size: 13px; font-weight: bold; color: #555;")
+        
+        self.lbl_ml_prob = QLabel("P(Pain ≥ 4.0 in 5 min): 0.0%")
+        self.lbl_ml_prob.setStyleSheet("font-size: 14px; font-weight: bold; color: #154360;")
+        
+        feedback_title = QLabel("<b>Instant Ergonomic Feedback & Actionable Guidance:</b>")
+        feedback_title.setStyleSheet("margin-top: 6px; font-size: 13px;")
+        
+        self.lbl_instant_feedback = QLabel("• Monitoring live muscular dynamics...")
+        self.lbl_instant_feedback.setStyleSheet("font-size: 13px; color: #1e8449; background-color: #eafaf1; padding: 8px; border: 1px solid #a9dfbf; border-radius: 4px;")
+        self.lbl_instant_feedback.setWordWrap(True)
+        
+        ml_layout.addWidget(self.lbl_ml_forecast)
+        ml_layout.addWidget(self.lbl_ml_ci)
+        ml_layout.addWidget(self.lbl_ml_prob)
+        ml_layout.addWidget(feedback_title)
+        ml_layout.addWidget(self.lbl_instant_feedback)
+        ml_box.setLayout(ml_layout)
+        dash_layout.addWidget(ml_box)
         
         grid_box = QGroupBox("Real-Time TensionBudget Analytics (Stage 3 / Phase 6 & 7)")
         grid_layout = QGridLayout()
@@ -796,6 +854,153 @@ class TensionBudgetApp(QMainWindow):
             slope_l = spec_res.get('left', {}).get('slope_hz_per_min', 0.0)
             slope_r = spec_res.get('right', {}).get('slope_hz_per_min', 0.0)
             self.lbl_fatigue.setText(f"Spectral Fatigue Trend: L Slope = {slope_l:.2f} Hz/min | R Slope = {slope_r:.2f} Hz/min")
+
+            # Update Live ML Pain Forecast ($t + 5\text{ min}$), Credible Intervals, Alert Banners & Feedback
+            self._update_ml_predictions_and_feedback(score_res, res_l, res_r, spec_res)
+
+    def _update_ml_predictions_and_feedback(self, score_res, res_l, res_r, spec_res):
+        eindex_l = float(score_res.get("eindex_live_left", 0.0))
+        eindex_r = float(score_res.get("eindex_live_right", 0.0))
+        ai = score_res.get("asymmetry_index", 0.0)
+        if ai is None or not isinstance(ai, (int, float)) or np.isnan(ai):
+            ai = 0.0
+        ai = float(ai)
+
+        apdf_l = res_l.get("active_apdf", {}) if isinstance(res_l.get("active_apdf"), dict) else {}
+        apdf_r = res_r.get("active_apdf", {}) if isinstance(res_r.get("active_apdf"), dict) else {}
+        apdf_10_l = float(apdf_l.get(10, 10.0)) if isinstance(apdf_l.get(10), (int, float)) else 10.0
+        apdf_10_r = float(apdf_r.get(10, 10.0)) if isinstance(apdf_r.get(10), (int, float)) else 10.0
+        apdf_50_l = float(apdf_l.get(50, 25.0)) if isinstance(apdf_l.get(50), (int, float)) else 25.0
+        apdf_50_r = float(apdf_r.get(50, 25.0)) if isinstance(apdf_r.get(50), (int, float)) else 25.0
+        apdf_90_l = float(apdf_l.get(90, 50.0)) if isinstance(apdf_l.get(90), (int, float)) else 50.0
+        apdf_90_r = float(apdf_r.get(90, 50.0)) if isinstance(apdf_r.get(90), (int, float)) else 50.0
+
+        gaps_count_l = float(res_l.get("gaps_count", 0))
+        gaps_count_r = float(res_r.get("gaps_count", 0))
+        elapsed_min = max(0.1, (self.session_sample_count / max(1, self.sampling_rate)) / 60.0)
+        gap_freq_l = gaps_count_l / elapsed_min
+        gap_freq_r = gaps_count_r / elapsed_min
+
+        short_suma_l = float(score_res.get("short_suma_penalty_left", 0.0))
+        short_suma_r = float(score_res.get("short_suma_penalty_right", 0.0))
+        suma_bins_l = res_l.get("suma_bins", {})
+        suma_bins_r = res_r.get("suma_bins", {})
+        total_suma_l = float(sum(suma_bins_l.values())) if isinstance(suma_bins_l, dict) else 0.0
+        total_suma_r = float(sum(suma_bins_r.values())) if isinstance(suma_bins_r, dict) else 0.0
+
+        mdf_l = float(spec_res.get("left", {}).get("mdf_hz", 45.0))
+        mdf_r = float(spec_res.get("right", {}).get("mdf_hz", 45.0))
+        slope_l = float(spec_res.get("left", {}).get("slope_hz_per_min", 0.0))
+        slope_r = float(spec_res.get("right", {}).get("slope_hz_per_min", 0.0))
+
+        mdf_trend_l = mdf_l - self.prev_mdf_l if self.prev_mdf_l is not None else 0.0
+        mdf_trend_r = mdf_r - self.prev_mdf_r if self.prev_mdf_r is not None else 0.0
+        gap_trend_l = gap_freq_l - self.prev_gap_freq_l if self.prev_gap_freq_l is not None else 0.0
+        gap_trend_r = gap_freq_r - self.prev_gap_freq_r if self.prev_gap_freq_r is not None else 0.0
+        eindex_trend_l = eindex_l - self.prev_eindex_l if self.prev_eindex_l is not None else 0.0
+        eindex_trend_r = eindex_r - self.prev_eindex_r if self.prev_eindex_r is not None else 0.0
+
+        self.prev_mdf_l = mdf_l
+        self.prev_mdf_r = mdf_r
+        self.prev_gap_freq_l = gap_freq_l
+        self.prev_gap_freq_r = gap_freq_r
+        self.prev_eindex_l = eindex_l
+        self.prev_eindex_r = eindex_r
+
+        feat_dict = {
+            "eindex_live_left": eindex_l, "eindex_live_right": eindex_r,
+            "apdf_10_left": apdf_10_l, "apdf_10_right": apdf_10_r,
+            "apdf_50_left": apdf_50_l, "apdf_50_right": apdf_50_r,
+            "apdf_90_left": apdf_90_l, "apdf_90_right": apdf_90_r,
+            "gap_frequency_left": gap_freq_l, "gap_frequency_right": gap_freq_r,
+            "short_suma_penalty_left": short_suma_l, "short_suma_penalty_right": short_suma_r,
+            "total_suma_bursts_left": total_suma_l, "total_suma_bursts_right": total_suma_r,
+            "mdf_hz_left": mdf_l, "mdf_hz_right": mdf_r,
+            "fatigue_slope_left": slope_l, "fatigue_slope_right": slope_r,
+            "asymmetry_index_ai": ai,
+            "calibration_rms_left": float(self.ref_rms_left), "calibration_rms_right": float(self.ref_rms_right),
+            "mdf_trend_left": mdf_trend_l, "mdf_trend_right": mdf_trend_r,
+            "gap_freq_trend_left": gap_trend_l, "gap_freq_trend_right": gap_trend_r,
+            "eindex_trend_left": eindex_trend_l, "eindex_trend_right": eindex_trend_r
+        }
+
+        if self.ml_loaded and self.ml_weights:
+            means = self.ml_weights.get("scaler_means", {})
+            stds = self.ml_weights.get("scaler_stds", {})
+            coefs = self.ml_weights.get("population_coefficients", {})
+            pop_int = float(self.ml_weights.get("population_intercept", 2.5))
+            user_offsets = self.ml_weights.get("user_intercept_offsets", {})
+            current_user = self.in_user_name.text().strip()
+            u_offset = float(user_offsets.get(current_user, 0.0))
+            sigma = float(self.ml_weights.get("residual_sigma", 0.85))
+
+            y_pred = pop_int + u_offset
+            for k, val in feat_dict.items():
+                m = float(means.get(k, 0.0))
+                s = float(stds.get(k, 1.0))
+                if s == 0: s = 1.0
+                std_val = (val - m) / s
+                y_pred += float(coefs.get(k, 0.0)) * std_val
+
+            y_pred_clamped = max(0.0, min(10.0, y_pred))
+
+            ci_low = max(0.0, y_pred_clamped - 1.645 * sigma)
+            ci_high = min(10.0, y_pred_clamped + 1.645 * sigma)
+            z = (4.0 - y_pred_clamped) / max(1e-6, sigma)
+            prob_high_strain = 1.0 - (0.5 * (1.0 + math.erf(z / math.sqrt(2.0))))
+
+            alert_policy = self.ml_weights.get("alert_policy", {})
+            req_prob = float(alert_policy.get("confidence_required", 0.85))
+            hard_ceil = float(alert_policy.get("hard_safety_ceiling", 5.5))
+
+            is_alert = (prob_high_strain >= req_prob) or (ci_high >= hard_ceil)
+
+            self.lbl_ml_forecast.setText(
+                f"Predicted Pain Score (t + 5 min): <b>{y_pred_clamped:.2f} / 10.0</b> (Borg Scale)"
+            )
+            self.lbl_ml_ci.setText(
+                f"90% Credible Interval: <b>[{ci_low:.2f}, {ci_high:.2f}]</b> | residual σ = {sigma:.2f}"
+            )
+            self.lbl_ml_prob.setText(
+                f"P(Pain ≥ 4.0 in 5 min): <b>{prob_high_strain * 100.0:.1f}%</b>"
+            )
+
+            if is_alert:
+                self.lbl_top_alert_banner.setText(
+                    f"🚨 EARLY WARNING ALERT (t + 5 min): Muscular Strain Predicted! (Borg {y_pred_clamped:.1f}, P={prob_high_strain*100:.0f}%) — Take an Ergonomic Break Now!"
+                )
+                self.lbl_top_alert_banner.setStyleSheet(
+                    "background-color: #d9534f; color: white; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;"
+                )
+            elif y_pred_clamped >= 2.5:
+                self.lbl_top_alert_banner.setText(
+                    f"⚠️ MODERATE LOAD WARNING: Muscle Fatigue Accumulating (Predicted Strain: {y_pred_clamped:.1f} in 5 min)."
+                )
+                self.lbl_top_alert_banner.setStyleSheet(
+                    "background-color: #f0ad4e; color: black; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;"
+                )
+            else:
+                self.lbl_top_alert_banner.setText(
+                    f"🟢 NORMAL MONITORING STATE: Trapezius Load Within Safe Range (Predicted Strain: {y_pred_clamped:.1f})."
+                )
+                self.lbl_top_alert_banner.setStyleSheet(
+                    "background-color: #2b6f39; color: white; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;"
+                )
+
+        feedback_bullets = []
+        if abs(ai) > 0.25:
+            side_str = "RIGHT" if ai > 0 else "LEFT"
+            feedback_bullets.append(f"• <b>Asymmetry Detected ({ai:+.2f}):</b> Excessive load on {side_str} trapezius. Check mouse/screen position.")
+        if (gap_freq_l < 5.0 and gap_freq_l > 0) or (gap_freq_r < 5.0 and gap_freq_r > 0):
+            feedback_bullets.append("• <b>Low Micro-Rest Gaps (< 5 gaps/min):</b> Perform a 10-second shoulder drop to rest motor units.")
+        if slope_l < -0.3 or slope_r < -0.3:
+            feedback_bullets.append("• <b>Downward Spectral Fatigue (-MDF Slope):</b> Muscle fiber conduction velocity slowing down.")
+        if short_suma_l > 0.3 or short_suma_r > 0.3:
+            feedback_bullets.append("• <b>Rapid Contraction Bursts (SUMA Penalty Active):</b> High short-duration effort cycles detected.")
+        if not feedback_bullets:
+            feedback_bullets.append("• <b>Good Ergonomic Posture:</b> Bilateral muscle loading and rest gaps are within optimal baseline limits.")
+
+        self.lbl_instant_feedback.setText("<br>".join(feedback_bullets))
 
     def _log_current_epoch(self, epoch_idx=None, is_final=False):
         if not self.local_logger or not self.local_logger.is_active or not hasattr(self, "last_score_res"):
