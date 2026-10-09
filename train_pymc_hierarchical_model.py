@@ -25,7 +25,11 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import arviz as az
-from supabase import create_client, Client
+import requests
+import pytensor
+
+# Disable C++ compiler to avoid MinGW 32-bit/64-bit incompatibility errors
+pytensor.config.cxx = ""
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
  
@@ -62,9 +66,10 @@ def prepare_dataset():
     print("Fetching live dataset from Supabase...")
     url = "" 
     key = "" 
-    supabase: Client = create_client(url, key)
-    response = supabase.table('v_ml_training_pairs').select('*').execute()
-    df = pd.DataFrame(response.data)
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+    response = requests.get(f"{url}/rest/v1/v_ml_training_pairs?select=*", headers=headers)
+    response.raise_for_status()
+    df = pd.DataFrame(response.json())
     
     if len(df) == 0:
         raise ValueError("Supabase returned 0 rows. Double-check your API key and URL.")

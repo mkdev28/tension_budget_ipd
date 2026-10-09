@@ -756,3 +756,229 @@ Executed a thorough diagnostic audit and implemented an automated verification t
    - Incorporate real-time coaching banner gauges and post-session analysis scorecard modals into both Desktop GUI and Web Wasm interfaces.
 
 
+
+## Phase X — ML Pipeline Correction (Step 0 & 1)
+Timestamp: 2026-10-08T16:30:25+05:30
+Status: Completed
+
+### Summary
+Executed Step 0 and 1 of the new PyMC ML model correction plan. Removed the hardcoded Supabase secret key from the codebase and transitioned it to a .env file loaded via python-dotenv. Confirmed .env is safely ignored in .gitignore. Conducted a data audit on the Supabase dataset which revealed 14 total labeled users, applied name unification for 'Lavish', and identified one flagged user ('nilesh sir') with fewer than 8 labeled epochs. Created the initial 	rain_pymc_hierarchical_model_v2.py script containing this audit logic.
+
+### Files created
+- 	rain_pymc_hierarchical_model_v2.py
+
+### Files modified
+- .env
+- logs/session_log.md
+
+## Phase X — ML Pipeline Correction (Step 2)
+Timestamp: 2026-10-08T16:40:06+05:30
+Status: Completed
+
+### Summary
+Executed Step 2 (2a–2e) of the ML pipeline correction.
+2a: Fixed target and trend construction bug — trends now use consecutive epoch_index diffs on
+the FULL epoch table; targets require the NEXT epoch in the same session to have strain_reported=1.
+2b: Removed calibration_rms_left and calibration_rms_right from all predictor sets.
+2c: Implemented pre-specified 4-rule calibration QC gate. Bounds chosen from data distributions
+before any model run. See QC bounds table in terminal output. Flagged sessions listed explicitly.
+2d: Declared outlier policy — no subject removed; Geeta Srivastava stays in headline results.
+2e: Computed personalized protocol eligibility for k_cal = 3 and 5.
+
+### QC Bounds Used
+{
+  "QC_RATIO_MAD_Z": 3.0,
+  "QC_WITHIN_SUBJECT_MIN_SESSIONS": 3,
+  "QC_WITHIN_SUBJECT_LOG_DEV": 1.5,
+  "QC_MIN_FRACTION_OF_POP_MEDIAN": 0.15,
+  "QC_MIN_ABSOLUTE_RMS_L": 107.6,
+  "QC_MIN_ABSOLUTE_RMS_R": 123.6
+}
+
+Rationale: QC_RATIO_MAD_Z=3.0: conservative 3-sigma equivalent on a robust scale, chosen before seeing LOSO results to avoid cherry-picking. QC_WITHIN_SUBJECT_LOG_DEV=1.5: ~4.5x deviation of session ratio from subject median, flags obvious electrode swap / sensor error. QC_MIN_FRACTION_OF_POP_MEDIAN=0.15: below 15% of population median indicates a failed shrug calibration (electrode detachment or no contraction).
+
+### Files modified
+- `train_pymc_hierarchical_model_v2.py`
+- `logs/session_log.md`
+
+## Phase X — ML Pipeline Correction (Steps 2 & 3)
+Timestamp: 2026-10-08T16:56:57+05:30
+Status: Completed
+
+### Summary
+Step 2 (2a-2e): Fixed target/trend construction, removed calibration_rms from predictors,
+applied 4-rule calibration QC gate, declared outlier policy, computed eligibility table.
+
+### QC Bounds Used (Step 2c)
+{
+  "QC_RATIO_MAD_Z": 3.0,
+  "QC_WITHIN_SUBJECT_MIN_SESSIONS": 3,
+  "QC_WITHIN_SUBJECT_LOG_DEV": 1.5,
+  "QC_MIN_FRACTION_OF_POP_MEDIAN": 0.15,
+  "QC_MIN_ABSOLUTE_RMS_L": 107.6,
+  "QC_MIN_ABSOLUTE_RMS_R": 123.6
+}
+Rationale: QC_RATIO_MAD_Z=3.0: conservative 3-sigma equivalent on a robust scale, chosen before seeing LOSO results to avoid cherry-picking. QC_WITHIN_SUBJECT_LOG_DEV=1.5: ~4.5x deviation of session ratio from subject median, flags obvious electrode swap / sensor error. QC_MIN_FRACTION_OF_POP_MEDIAN=0.15: below 15% of population median indicates a failed shrug calibration (electrode detachment or no contraction).
+
+### Step 3 Feature Engineering
+3a: Winsorized 16 features at 1.0th/99.0th percentiles (training data only).
+3b: Near-constant features binarized: ['short_suma_penalty_left']. Std threshold: 0.05.
+3c: Scaling mode: Per-subject causal expanding z-score.
+    Global fallback used for first 3 epochs per subject.
+
+### Files modified
+- `train_pymc_hierarchical_model_v2.py`
+- `logs/session_log.md`
+
+
+## Phase X — ML Pipeline Correction (Steps 2 & 3)
+
+Timestamp: 2026-10-08T17:28:55+05:30
+
+Status: Completed
+
+
+
+### Summary
+
+Step 2 (2a-2e): Fixed target/trend construction, removed calibration_rms from predictors,
+
+applied 4-rule calibration QC gate, declared outlier policy, computed eligibility table.
+
+
+
+### QC Bounds Used (Step 2c)
+
+{
+  "QC_RATIO_MAD_Z": 3.0,
+  "QC_WITHIN_SUBJECT_MIN_SESSIONS": 3,
+  "QC_WITHIN_SUBJECT_LOG_DEV": 1.5,
+  "QC_MIN_FRACTION_OF_POP_MEDIAN": 0.15,
+  "QC_MIN_ABSOLUTE_RMS_L": 107.6,
+  "QC_MIN_ABSOLUTE_RMS_R": 123.6
+}
+
+Rationale: QC_RATIO_MAD_Z=3.0: conservative 3-sigma equivalent on a robust scale, chosen before seeing LOSO results to avoid cherry-picking. QC_WITHIN_SUBJECT_LOG_DEV=1.5: ~4.5x deviation of session ratio from subject median, flags obvious electrode swap / sensor error. QC_MIN_FRACTION_OF_POP_MEDIAN=0.15: below 15% of population median indicates a failed shrug calibration (electrode detachment or no contraction).
+
+
+
+### Step 3 Feature Engineering
+
+3a: Winsorized 16 features at 1.0th/99.0th percentiles (training data only).
+
+3b: Near-constant features binarized: ['short_suma_penalty_left']. Std threshold: 0.05.
+
+3c: Scaling mode: Per-subject causal expanding z-score.
+
+    Global fallback used for first 3 epochs per subject.
+
+
+
+### Files modified
+
+- `train_pymc_hierarchical_model_v2.py`
+
+- `logs/session_log.md`
+
+
+
+## Phase X — ML Pipeline Correction (Steps 2 & 3)
+
+Timestamp: 2026-10-08T21:10:18+05:30
+
+Status: Completed
+
+
+
+### Summary
+
+Step 2 (2a-2e): Fixed target/trend construction, removed calibration_rms from predictors,
+
+applied 4-rule calibration QC gate, declared outlier policy, computed eligibility table.
+
+
+
+### QC Bounds Used (Step 2c)
+
+{
+  "QC_RATIO_MAD_Z": 3.0,
+  "QC_WITHIN_SUBJECT_MIN_SESSIONS": 3,
+  "QC_WITHIN_SUBJECT_LOG_DEV": 1.5,
+  "QC_MIN_FRACTION_OF_POP_MEDIAN": 0.15,
+  "QC_MIN_ABSOLUTE_RMS_L": 107.6,
+  "QC_MIN_ABSOLUTE_RMS_R": 123.6
+}
+
+Rationale: QC_RATIO_MAD_Z=3.0: conservative 3-sigma equivalent on a robust scale, chosen before seeing LOSO results to avoid cherry-picking. QC_WITHIN_SUBJECT_LOG_DEV=1.5: ~4.5x deviation of session ratio from subject median, flags obvious electrode swap / sensor error. QC_MIN_FRACTION_OF_POP_MEDIAN=0.15: below 15% of population median indicates a failed shrug calibration (electrode detachment or no contraction).
+
+
+
+### Step 3 Feature Engineering
+
+3a: Winsorized 16 features at 1.0th/99.0th percentiles (training data only).
+
+3b: Near-constant features binarized: ['short_suma_penalty_left']. Std threshold: 0.05.
+
+3c: Scaling mode: Per-subject causal expanding z-score.
+
+    Global fallback used for first 3 epochs per subject.
+
+
+
+### Files modified
+
+- `train_pymc_hierarchical_model_v2.py`
+
+- `logs/session_log.md`
+
+
+
+## Phase X — ML Pipeline Correction (Steps 2 & 3)
+
+Timestamp: 2026-10-08T21:24:07+05:30
+
+Status: Completed
+
+
+
+### Summary
+
+Step 2 (2a-2e): Fixed target/trend construction, removed calibration_rms from predictors,
+
+applied 4-rule calibration QC gate, declared outlier policy, computed eligibility table.
+
+
+
+### QC Bounds Used (Step 2c)
+
+{
+  "QC_RATIO_MAD_Z": 3.0,
+  "QC_WITHIN_SUBJECT_MIN_SESSIONS": 3,
+  "QC_WITHIN_SUBJECT_LOG_DEV": 1.5,
+  "QC_MIN_FRACTION_OF_POP_MEDIAN": 0.15,
+  "QC_MIN_ABSOLUTE_RMS_L": 107.6,
+  "QC_MIN_ABSOLUTE_RMS_R": 123.6
+}
+
+Rationale: QC_RATIO_MAD_Z=3.0: conservative 3-sigma equivalent on a robust scale, chosen before seeing LOSO results to avoid cherry-picking. QC_WITHIN_SUBJECT_LOG_DEV=1.5: ~4.5x deviation of session ratio from subject median, flags obvious electrode swap / sensor error. QC_MIN_FRACTION_OF_POP_MEDIAN=0.15: below 15% of population median indicates a failed shrug calibration (electrode detachment or no contraction).
+
+
+
+### Step 3 Feature Engineering
+
+3a: Winsorized 16 features at 1.0th/99.0th percentiles (training data only).
+
+3b: Near-constant features binarized: ['short_suma_penalty_left']. Std threshold: 0.05.
+
+3c: Scaling mode: Per-subject causal expanding z-score.
+
+    Global fallback used for first 3 epochs per subject.
+
+
+
+### Files modified
+
+- `train_pymc_hierarchical_model_v2.py`
+
+- `logs/session_log.md`
+
